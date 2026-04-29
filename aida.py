@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 AIDA CLI Launcher - Professional Python Implementation
-AI-Driven Security Assessment - Intelligent wrapper for Claude Code, Kimi CLI & Qwen Code
+AI-Driven Security Assessment - Intelligent wrapper for Claude Code, Kimi CLI, Qwen Code, & OpenCode
 """
 import os
 import sys
@@ -104,7 +104,7 @@ DEFAULT_BACKEND = "http://localhost:8000/api"
 CONTAINER_PREFS_FILE = AIDA_CONFIG_DIR / "container-preference"
 
 # CLI types
-CLIType = Literal["claude", "kimi", "qwen"]
+CLIType = Literal["claude", "kimi", "qwen", "opencode"]
 
 
 def ensure_backend_venv(quiet=False) -> Path:
@@ -294,8 +294,83 @@ agent:
     return KIMI_AGENT_FILE
 
 
+def generate_opencode_config(db_url: str, token: str = "", 
+                             preprompt_content: str = "",
+                             explicit_model: str = "",
+                             no_mcp: bool = False,
+                             quiet=False) -> None:
+    """Generate OpenCode configuration at ~/.config/opencode/opencode.json"""
+    config_dir = Path.home() / ".config" / "opencode"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    config_file = config_dir / "opencode.json"
+    
+    # Load existing config to preserve user settings
+    existing_config = {}
+    if config_file.exists():
+        try:
+            existing_config = json.loads(config_file.read_text())
+        except (json.JSONDecodeError, OSError):
+            pass
+    
+    # Start with existing config, we'll update specific keys
+    config = {**existing_config}
+    
+    # Set model if specified
+    if explicit_model:
+        config["model"] = explicit_model
+    
+    # Prepare MCP configuration
+    if not no_mcp and MCP_SERVER_PATH.exists():
+        try:
+            python_bin = ensure_backend_venv(quiet=True)
+            python_bin_str = str(python_bin.absolute())
+        except Exception:
+            python_bin_str = "python3"
+        
+        mcp_config = {
+            "aida-mcp": {
+                "type": "local",
+                "command": [python_bin_str, str(MCP_SERVER_PATH.absolute())],
+                "environment": {
+                    "PYTHONPATH": str((AIDA_ROOT / "backend").absolute()),
+                    "DATABASE_URL": db_url,
+                    "AIDA_TOKEN": token,
+                }
+            }
+        }
+        config["mcp"] = mcp_config
+    
+    # Write instructions file if preprompt provided
+    if preprompt_content:
+        instructions_dir = config_dir / "instructions"
+        instructions_dir.mkdir(exist_ok=True)
+        instructions_file = instructions_dir / "aida-system.md"
+        instructions_file.write_text(preprompt_content)
+        
+        # Add to instructions array if not present
+        if "instructions" not in config:
+            config["instructions"] = []
+        
+        # Use relative path from home
+        instruction_path = f"~/.config/opencode/instructions/aida-system.md"
+        if instruction_path not in config.get("instructions", []):
+            if "instructions" not in config:
+                config["instructions"] = []
+            config["instructions"].append(instruction_path)
+    
+    # Write config file with schema reference
+    if "$schema" not in config:
+        config = {"$schema": "https://opencode.ai/config.json", **config}
+    
+    config_file.write_text(json.dumps(config, indent=2))
+    config_file.chmod(0o600)
+    
+    if not quiet:
+        console.print(f"[dim]✓ OpenCode config: {config_file}[/dim]")
+
+
 def detect_cli() -> CLIType:
-    """Detect which CLI is available (claude, kimi, or qwen)"""
+    """Detect which CLI is available (claude, kimi, qwen, or opencode)"""
     # Check for Claude
     result = subprocess.run(["which", "claude"], capture_output=True)
     if result.returncode == 0:
@@ -310,6 +385,11 @@ def detect_cli() -> CLIType:
     result = subprocess.run(["which", "qwen"], capture_output=True)
     if result.returncode == 0:
         return "qwen"
+
+    # Check for OpenCode
+    result = subprocess.run(["which", "opencode"], capture_output=True)
+    if result.returncode == 0:
+        return "opencode"
 
     return None
 
@@ -498,7 +578,7 @@ def show_assessment_not_found(assessment_name: str, backend_url: str):
 
 
 def show_cli_not_found():
-    """Display error when neither Claude nor Kimi nor Qwen CLI is found"""
+    """Display error when no compatible AI CLI is found"""
     console.print("[red]✗ No compatible AI CLI found[/red]\n")
     console.print("Please install one of the following:\n")
     console.print("[bold]Claude Code:[/bold]")
@@ -511,6 +591,12 @@ def show_cli_not_found():
     console.print("  [cyan]npm install -g @qwen-code/qwen-code@latest[/cyan]")
     console.print("  or")
     console.print("  [cyan]bash -c \"$(curl -fsSL https://qwen-code-assets.oss-cn-hangzhou.aliyuncs.com/installation/install-qwen.sh)\"[/cyan]\n")
+    console.print("[bold]OpenCode:[/bold]")
+    console.print("  [cyan]curl -fsSL https://opencode.ai/install | bash[/cyan]")
+    console.print("  or")
+    console.print("  [cyan]npm install -g opencode-ai[/cyan]")
+    console.print("  or")
+    console.print("  [cyan]brew install anomalyco/tap/opencode[/cyan]\n")
     sys.exit(1)
 
 
@@ -528,14 +614,14 @@ def show_cli_not_found():
               help="Bearer API key for the HTTP MCP transport (env: AIDA_MCP_API_KEY)")
 @click.option("--debug", is_flag=True, help="Enable debug mode")
 @click.option("-q", "--quiet", is_flag=True, help="Quiet mode (minimal output)")
-@click.option("--cli", "cli_choice", type=click.Choice(["claude", "kimi", "qwen", "auto"]), default="auto",
+@click.option("--cli", "cli_choice", type=click.Choice(["claude", "kimi", "qwen", "opencode", "auto"]), default="auto",
               help="Which CLI to use (default: auto-detect)")
 @click.option("-y", "--yes", is_flag=True, help="Auto-approve all actions (Kimi/Qwen: --yolo, Claude: permission-mode=accept)")
 @click.argument("prompt", nargs=-1)
 def main(assessment, model, permission_mode, preprompt, base_url, api_key, no_mcp, http_url, mcp_api_key, debug, quiet, cli_choice, yes, prompt):
     """AIDA CLI Launcher - AI-Driven Security Assessment
 
-    Supports Claude Code, Kimi CLI, and Qwen Code CLI as underlying AI agents.
+    Supports Claude Code, Kimi CLI, Qwen Code CLI, and OpenCode as underlying AI agents.
     """
     
     # Clear terminal for clean start
@@ -561,6 +647,13 @@ def main(assessment, model, permission_mode, preprompt, base_url, api_key, no_mc
     explicit_model = model or os.getenv("AIDA_MODEL")
     base_url = base_url or os.getenv("ANTHROPIC_BASE_URL")
     api_key = api_key or os.getenv("ANTHROPIC_AUTH_TOKEN")
+    
+    # For Qwen/OpenAI-compatible models, also check OpenAI env vars
+    # This enables local model support (e.g., LM Studio, Ollama with OpenAI API endpoint)
+    if cli_type == "qwen" or cli_choice == "qwen":
+        base_url = base_url or os.getenv("OPENAI_BASE_URL")
+        api_key = api_key or os.getenv("OPENAI_API_KEY")
+        explicit_model = explicit_model or os.getenv("OPENAI_MODEL")
     
     # If using external API but no model specified, use default (Claude only)
     if cli_type == "claude" and (base_url or api_key) and not explicit_model:
@@ -818,12 +911,15 @@ The assessment workspace is ready. Use your standard tools to work with files an
 
         cli_name = "Kimi CLI"
 
-    else:  # cli_type == "qwen"
+    elif cli_type == "qwen":
         # Build Qwen Code CLI command
         # Qwen uses TWO config files:
-        # 1. .qwen/settings.json - MCP servers, models, API keys
+        # 1. .qwen/settings.json - MCP servers, models, API keys (includes local model config)
         # 2. QWEN.md - System prompt (markdown file)
         # Config can be in workspace (project) or ~/.qwen (global)
+        # 
+        # For local models: Set OPENAI_BASE_URL, OPENAI_API_KEY, OPENAI_MODEL env vars
+        # Example: export OPENAI_BASE_URL="http://localhost:11343/v1"
         
         # Create Qwen settings content
         def create_qwen_settings():
@@ -933,6 +1029,28 @@ The assessment workspace is ready. Use your standard tools to work with files an
         env = os.environ.copy()
         cli_name = "Qwen Code CLI"
 
+    else:  # cli_type == "opencode"
+        # Build OpenCode command
+        # OpenCode uses config files instead of CLI flags for system prompt/model
+        
+        # Generate OpenCode config at ~/.config/opencode/opencode.json
+        generate_opencode_config(
+            db_url, token, preprompt_content, explicit_model, no_mcp, quiet
+        )
+        
+        # Build simple command - just run with the prompt
+        cli_args = ["opencode", "run"]
+        
+        # Add prompt if provided
+        if prompt:
+            cli_args.append(" ".join(prompt))
+        else:
+            # If no prompt, just start interactive mode
+            cli_args = ["opencode"]
+        
+        env = os.environ.copy()
+        cli_name = "OpenCode"
+
     # Display launch banner
     if not quiet:
         console.print()
@@ -982,9 +1100,12 @@ The assessment workspace is ready. Use your standard tools to work with files an
             os.execvpe("claude", cli_args, env)
         elif cli_type == "kimi":
             os.execvpe("kimi", cli_args, env)
-        else:  # qwen
+        elif cli_type == "qwen":
             os.chdir(workspace_path)
             os.execvpe("qwen", cli_args, env)
+        elif cli_type == "opencode":
+            os.chdir(workspace_path)
+            os.execvpe("opencode", cli_args, env)
     except Exception as e:
         console.print(f"[red]Failed to launch {cli_name}: {e}[/red]")
         sys.exit(1)

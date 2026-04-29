@@ -70,3 +70,7 @@ switch-db.sh
 
 # Claude Code internal files
 .claude/
+
+# Qwen internal files
+.qwen/
+QWEN.md
