@@ -73,4 +73,3 @@ switch-db.sh
 
 # Qwen internal files
 .qwen/
-QWEN.md
