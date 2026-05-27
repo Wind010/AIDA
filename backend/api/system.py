@@ -560,12 +560,10 @@ async def open_folder(request: OpenFolderRequest):
     This is used by the frontend to open the Exegol workspaces folder
     """
     import os
-    
+
     folder_path = request.path
-    
+
     # Security: Only allow opening paths under known safe directories
-    # Use expanduser for home directory
-    import os
     home_dir = os.path.expanduser("~")
     allowed_prefixes = [
         f"{home_dir}/.exegol/workspaces",

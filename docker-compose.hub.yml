@@ -2,13 +2,19 @@
 # AIDA — Docker Hub (pre-built images, no git clone needed)
 # =============================================================================
 #
-# Quick start:
+# Local-only quick start (HTTP, no TLS — fine for personal use on this machine):
 #   curl -fsSL https://raw.githubusercontent.com/Vasco0x4/AIDA/main/docker-compose.hub.yml -o docker-compose.yml
 #   docker compose up -d
 #   open http://localhost:31337
 #
-# LAN access (share with your team):
+# LAN sharing (HTTP — acceptable on a trusted home/office network):
 #   FRONTEND_BIND=0.0.0.0 docker compose up -d
+#
+# For HTTPS (LAN with cert, or public domain with Let's Encrypt), use the git
+# repo and ./start.sh which adds Caddy as a TLS reverse proxy:
+#   git clone https://github.com/Vasco0x4/AIDA.git && cd AIDA
+#   ./start.sh --lan                          # https://<LAN_IP>
+#   ./start.sh --domain aida.example.com      # https://aida.example.com (Let's Encrypt)
 #
 # =============================================================================
 

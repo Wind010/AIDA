@@ -53,8 +53,6 @@ async def handle_tool_call(name: str, arguments: dict, mcp_service) -> List[Text
         elif name == "list_assessments":
             return await _handle_list_assessments(arguments, mcp_service)
 
-        elif name == "update_phase":
-            return await _handle_update_phase(arguments, mcp_service)
         # ========== Cards Management (unified) ==========
 
         elif name == "add_card":
@@ -522,28 +520,6 @@ async def _handle_list_assessments(arguments: dict, mcp_service) -> List[TextCon
 
     except Exception as e:
         return [TextContent(type="text", text=f"Error listing assessments: {str(e)}")]
-
-
-async def _handle_update_phase(arguments: dict, mcp_service) -> List[TextContent]:
-    """Handle update_phase - Update phase content"""
-    if not mcp_service.current_assessment_id:
-        return [TextContent(type="text", text="No assessment loaded. Use 'load_assessment' first.")]
-
-    phase_num = arguments["phase_number"]
-    section_type = f"phase_{int(phase_num)}"
-
-    await mcp_service.update_section(
-        assessment_id=mcp_service.current_assessment_id,
-        section_type=section_type,
-        section_number=phase_num,
-        title=arguments.get("title"),
-        content=arguments["content"]
-    )
-
-    return [TextContent(
-        type="text",
-        text=f"Phase {phase_num} updated"
-    )]
 
 
 # ========== Cards Management Handlers (unified) ==========

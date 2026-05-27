@@ -1,0 +1,1125 @@
+/* ================================================================
+   AIDA Security Report — PDF stylesheet
+   Target: WeasyPrint 62+ (CSS Paged Media)
+   ================================================================ */
+
+/* ----------------------------------------------------------------
+   PAGE & BASE
+   ---------------------------------------------------------------- */
+@page {
+  size: A4;
+  margin: 1.8cm 2cm 2.2cm 2cm;
+  @bottom-left {
+    content: "CONFIDENTIAL — AIDA Security Report";
+    font-size: 7pt;
+    color: #94a3b8;
+    font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+  }
+  @bottom-right {
+    content: "Page " counter(page) " / " counter(pages);
+    font-size: 7pt;
+    color: #94a3b8;
+    font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+  }
+}
+
+/* Cover page has its own bleeded layout — no margin, no footer */
+@page cover {
+  size: A4;
+  margin: 0;
+  @bottom-left  { content: none; }
+  @bottom-right { content: none; }
+}
+
+:root {
+  --primary: #6366f1;
+  --primary-dark: #4338ca;
+  --bg-dark: #0f172a;
+  --bg-card: #ffffff;
+  --border: #e2e8f0;
+  --border-soft: #f1f5f9;
+  --text: #1e293b;
+  --text-light: #64748b;
+  --text-muted: #94a3b8;
+  --accent-critical: #e11d48;
+  --accent-high: #f43f5e;
+  --accent-medium: #f59e0b;
+  --accent-low: #3b82f6;
+  --accent-info: #64748b;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+  font-size: 9.5pt;
+  line-height: 1.6;
+  color: var(--text);
+  margin: 0;
+  padding: 0;
+}
+
+/* ----------------------------------------------------------------
+   COVER PAGE — uses named page @page cover (isolates background)
+   Layout: three vertical zones (top brand / mid title / bottom meta)
+   positioned absolutely so they don't leave empty space when there
+   are few metadata fields.
+   ---------------------------------------------------------------- */
+.cover {
+  page: cover;
+  page-break-after: always;
+  break-after: page;
+  width: 210mm;
+  height: 297mm;
+  background: #0a0f1e;        /* deep navy, fewer gradient artifacts */
+  color: #ffffff;
+  position: relative;
+  overflow: hidden;
+}
+
+/* A thin colored bar across the very top — modern report signature */
+.cover-accent-top {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 8px;
+  background: linear-gradient(90deg, #6366f1 0%, #a78bfa 50%, #6366f1 100%);
+}
+
+/* === Top zone : brand === */
+.cover-brand-block {
+  position: absolute;
+  top: 60px;
+  left: 60px;
+  right: 60px;
+}
+.cover-logo {
+  width: 80px;
+  height: auto;
+  opacity: 0.95;
+  margin-bottom: 14px;
+}
+.cover-brand {
+  font-size: 11pt;
+  font-weight: 700;
+  letter-spacing: 6px;
+  text-transform: uppercase;
+  color: #a5b4fc;
+}
+.cover-brand-tagline {
+  margin-top: 6px;
+  font-size: 8.5pt;
+  letter-spacing: 1.5px;
+  color: rgba(199, 210, 254, 0.55);
+  text-transform: uppercase;
+}
+
+/* === Middle zone : title block, anchored ~26% from top === */
+.cover-title-block {
+  position: absolute;
+  top: 26%;
+  left: 60px;
+  right: 60px;
+}
+.cover-line {
+  width: 48px;
+  height: 3px;
+  background: linear-gradient(90deg, #6366f1, #a78bfa);
+  border: none;
+  margin: 0 0 22px 0;
+  border-radius: 2px;
+}
+.cover h1 {
+  font-size: 34pt;
+  font-weight: 700;
+  line-height: 1.1;
+  margin: 0 0 14px 0;
+  color: #ffffff;
+  letter-spacing: -0.5px;
+}
+.cover-subtitle {
+  font-size: 16pt;
+  font-weight: 400;
+  color: #c7d2fe;
+  margin: 0;
+}
+
+/* Optional risk tag shown under the subtitle */
+.cover-risk-tag {
+  display: inline-block;
+  margin-top: 18px;
+  padding: 5px 14px;
+  font-size: 8pt;
+  font-weight: 700;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  border-radius: 3px;
+}
+
+/* === Bottom zone : meta grid + footer === */
+.cover-meta-grid {
+  position: absolute;
+  bottom: 110px;
+  left: 60px;
+  right: 60px;
+}
+.cover-meta-grid table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+.cover-meta-grid td {
+  padding: 10px 0;
+  border: none;
+  border-top: 1px solid rgba(255,255,255,0.08);
+  background: transparent !important;
+  vertical-align: middle;
+}
+.cover-meta-grid tr:last-child td {
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+}
+.cover-meta-label {
+  width: 130px;
+  font-size: 8pt;
+  text-transform: uppercase;
+  letter-spacing: 2px;
+  color: #818cf8;
+  font-weight: 600;
+}
+.cover-meta-value {
+  font-size: 10.5pt;
+  color: #e2e8f0;
+  word-break: break-word;
+}
+
+.cover-footer {
+  position: absolute;
+  bottom: 40px;
+  left: 60px;
+  right: 60px;
+  text-align: center;
+  font-size: 7.5pt;
+  color: rgba(255,255,255,0.35);
+  letter-spacing: 0.8px;
+}
+.cover-footer .cover-footer-mark {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 7pt;
+  letter-spacing: 3px;
+  color: rgba(165, 180, 252, 0.45);
+}
+
+/* ----------------------------------------------------------------
+   TABLE OF CONTENTS
+   The page numbers come from WeasyPrint's target-counter(); the dotted
+   leader between the title and the page number is generated with the
+   leader() content function. Both are paged-media CSS features.
+   ---------------------------------------------------------------- */
+.toc {
+  page-break-after: always;
+  padding-top: 14px;
+}
+.toc h2 {
+  font-size: 18pt;
+  font-weight: 700;
+  color: #171717;        /* neutral, matches body text */
+  border: none;
+  border-bottom: 3px solid var(--primary);
+  margin: 0 0 22px 0;
+  padding-bottom: 10px;
+  letter-spacing: -0.3px;
+}
+
+.toc-item {
+  font-size: 10pt;
+  margin: 0;
+  padding: 0;
+  border: none;
+  line-height: 1.9;
+}
+.toc-item a {
+  color: var(--text);
+  text-decoration: none;
+  display: block;
+}
+.toc-item a::after {
+  content: leader('.') ' ' target-counter(attr(href), page);
+  color: var(--text-light);
+  font-weight: 400;
+}
+.toc-num {
+  display: inline-block;
+  width: 32px;
+  font-weight: 700;
+  color: var(--primary);
+}
+
+/* Sub-entries: one per finding listed under "02 Findings" */
+.toc-sub {
+  padding-left: 28px;
+  font-size: 9pt;
+  line-height: 1.8;
+}
+.toc-sub a {
+  color: var(--text-light);
+  display: block;
+}
+.toc-sub a::after {
+  content: leader('.') ' ' target-counter(attr(href), page);
+  color: var(--text-muted);
+}
+.toc-sub .toc-sub-num {
+  display: inline-block;
+  width: 32px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+.toc-sub .toc-sub-sev {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 0 6px;
+  font-size: 6.5pt;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  border-radius: 2px;
+  color: #fff;
+  vertical-align: 1px;
+}
+
+/* ----------------------------------------------------------------
+   SECTION HEADINGS
+   ---------------------------------------------------------------- */
+h2 {
+  font-size: 16pt;
+  font-weight: 700;
+  color: var(--bg-dark);
+  margin-top: 35px;
+  margin-bottom: 6px;
+  padding-bottom: 8px;
+  border-bottom: 3px solid var(--primary);
+  letter-spacing: -0.3px;
+}
+h2 .section-num {
+  color: var(--primary);
+  margin-right: 6px;
+}
+h3 {
+  font-size: 11.5pt;
+  font-weight: 600;
+  margin-top: 22px;
+  margin-bottom: 4px;
+  color: #334155;
+}
+
+/* ----------------------------------------------------------------
+   RISK BANNER — slim accent bar instead of a full block
+   ---------------------------------------------------------------- */
+.risk-banner {
+  padding: 14px 0 14px 18px;
+  margin: 18px 0 24px 0;
+  border-left: 5px solid currentColor;
+  text-align: left;
+}
+.risk-banner .risk-label {
+  font-size: 7.5pt;
+  text-transform: uppercase;
+  letter-spacing: 2px;
+  color: var(--text-light);
+  margin-bottom: 2px;
+}
+.risk-banner .risk-level {
+  font-size: 22pt;
+  font-weight: 800;
+  letter-spacing: 1px;
+  color: currentColor;
+  line-height: 1;
+}
+.risk-banner .risk-summary {
+  margin-top: 8px;
+  font-size: 9pt;
+  color: var(--text-light);
+  line-height: 1.5;
+}
+.risk-banner .risk-summary strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+/* ----------------------------------------------------------------
+   TOP FINDINGS BLOCK in the executive summary
+   ---------------------------------------------------------------- */
+.top-findings {
+  margin: 14px 0 22px 0;
+  border-collapse: collapse;
+  width: 100%;
+  table-layout: fixed;
+  font-size: 9pt;
+}
+.top-findings th,
+.top-findings td {
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--border-soft);
+  text-align: left;
+  vertical-align: middle;
+}
+.top-findings th {
+  font-size: 7.5pt;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--text-light);
+  font-weight: 700;
+  background: transparent;
+  border-bottom: 2px solid var(--border);
+}
+.top-findings tr:last-child td { border-bottom: none; }
+.top-findings tr:nth-child(even) td { background: transparent !important; }
+.top-findings .col-id  { width: 36px;  color: var(--text-muted); font-size: 8pt; font-weight: 600; white-space: nowrap; }
+.top-findings .col-sev { width: 80px; white-space: nowrap; }
+.top-findings .col-cvss { width: 48px; text-align: right; color: var(--text-light); font-size: 8.5pt; white-space: nowrap; }
+.top-findings .col-target { width: 26%; color: var(--text-light); font-size: 8.5pt; word-break: break-word; }
+.top-findings th { white-space: nowrap; }
+.top-findings th.col-target { white-space: normal; }
+.top-findings .top-sev-badge {
+  display: inline-block;
+  padding: 1px 7px;
+  font-size: 7pt;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  border-radius: 2px;
+  color: #fff;
+}
+
+/* ----------------------------------------------------------------
+   STATS CARDS — flat (no border, just numbers + label)
+   Rendered as a <table> for WeasyPrint reliability.
+   ---------------------------------------------------------------- */
+.stats-row {
+  width: 100%;
+  margin: 18px 0 26px 0;
+  border-collapse: separate;
+  border-spacing: 24px 0;
+}
+.stat-card {
+  padding: 0;
+  text-align: left;
+  width: 25%;
+  border: none !important;
+  background: transparent;
+}
+.stat-num {
+  font-size: 26pt;
+  font-weight: 800;
+  line-height: 1.05;
+}
+.stat-label {
+  font-size: 7.5pt;
+  text-transform: uppercase;
+  letter-spacing: 1.4px;
+  color: var(--text-light);
+  margin-top: 4px;
+  font-weight: 600;
+}
+
+/* ----------------------------------------------------------------
+   SEVERITY BAR CHART (rendered as a table — single row per severity)
+   The fill width is set via inline style on the .sev-chart-bar cell.
+   Using a real table cell instead of inline-block divs is what makes
+   the colored fill render reliably in WeasyPrint.
+   ---------------------------------------------------------------- */
+.sev-chart {
+  margin: 14px 0 22px 0;
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+.sev-chart td {
+  padding: 4px 0;
+  border: none;
+  vertical-align: middle;
+  background: transparent !important;
+}
+.sev-chart td.sev-chart-label-cell {
+  width: 80px;
+  font-size: 8pt;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding-right: 12px;
+}
+.sev-chart td.sev-chart-count-cell {
+  width: 40px;
+  text-align: right;
+  font-size: 9pt;
+  font-weight: 700;
+  color: var(--text);
+  padding-left: 10px;
+}
+.sev-chart td.sev-chart-track {
+  padding: 0;
+}
+.sev-chart-track-inner {
+  height: 18px;
+  background: #f1f5f9;
+  border-radius: 3px;
+  overflow: hidden;
+  width: 100%;
+}
+.sev-chart-fill {
+  height: 100%;
+  border-radius: 3px;
+}
+
+/* ----------------------------------------------------------------
+   GENERIC CODE BLOCKS — robust overflow handling
+   ---------------------------------------------------------------- */
+pre,
+code {
+  font-family: "SF Mono", "Fira Code", "Consolas", "Courier New", monospace;
+}
+
+pre {
+  font-size: 7.5pt;
+  line-height: 1.5;
+  padding: 10px 12px;
+  background: #f8fafc;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  overflow-wrap: anywhere;
+  max-width: 100%;
+  color: #334155;
+  margin: 6px 0;
+}
+
+/* ----------------------------------------------------------------
+   FINDINGS — flat report layout, separated by a severity-colored bar
+   that's visible at a glance when scrolling the report.
+
+   page-break-inside: avoid is best-effort in paged media: when a finding
+   fits on the remaining space of the current page (or on a fresh page),
+   the engine keeps it together; when it's truly taller than a single
+   page (huge PoC, long tech analysis), the engine still allows it to
+   split rather than overflow. That gives us the right behavior in
+   both cases without any data-aware splitting logic.
+   ---------------------------------------------------------------- */
+.finding {
+  margin: 0 0 36px 0;
+  page-break-inside: avoid;
+  break-inside: avoid;
+  position: relative;
+}
+/* Add breathing room between section heading and first finding */
+h2#findings + .finding { margin-top: 22px; }
+
+/* Soft separator that visually opens a new finding without screaming.
+   A long thin neutral hairline (the document's default border color)
+   with a short colored stub at the left — the stub picks up the
+   severity tint without flooding the page with red. */
+.finding-accent {
+  position: relative;
+  height: 1px;
+  width: 100%;
+  background: var(--border);
+  margin: 0 0 16px 0;
+}
+.finding-accent::before {
+  content: "";
+  position: absolute;
+  top: -1px;
+  left: 0;
+  width: 36px;
+  height: 3px;
+  background: currentColor;
+  border-radius: 2px;
+}
+/* The very first finding under a section heading already has the h2
+   underline above it — drop the accent there to avoid stacking two bars. */
+h2#findings + .finding .finding-accent { display: none; }
+
+.finding-header {
+  font-weight: 700;
+  font-size: 13pt;
+  letter-spacing: -0.2px;
+  margin: 0 0 10px 0;
+  page-break-after: avoid;
+  line-height: 1.35;
+}
+.finding-header .finding-sev {
+  display: inline-block;
+  padding: 2px 9px;
+  border-radius: 3px;
+  font-size: 7.5pt;
+  font-weight: 700;
+  letter-spacing: 0.6px;
+  color: #fff;
+  vertical-align: 3px;
+  margin-right: 10px;
+}
+.finding-header .finding-title {
+  color: var(--text);
+}
+.finding-header .finding-id {
+  color: var(--text-muted);
+  font-weight: 400;
+  font-size: 9pt;
+  margin-left: 8px;
+}
+.finding-meta {
+  margin: 0 0 12px 0;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border-soft);
+}
+/* Each meta field renders as a small inline-ish definition entry */
+.finding-meta-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0;
+  table-layout: fixed;
+}
+.finding-meta-table td {
+  padding: 2px 0;
+  border: none;
+  background: transparent !important;
+  vertical-align: top;
+  font-size: 8.5pt;
+  color: var(--text);
+}
+.finding-meta-table td.fm-label {
+  width: 70px;
+  font-size: 7pt;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  font-weight: 700;
+  color: var(--text-light);
+  padding-right: 8px;
+  white-space: nowrap;
+}
+.finding-meta-table td.fm-value {
+  color: var(--text);
+  word-break: break-word;
+}
+.finding-meta-table td.fm-value.fm-mono {
+  font-family: "SF Mono", "Fira Code", "Consolas", monospace;
+  font-size: 7.5pt;
+  color: var(--text-muted);
+  word-break: break-all;
+}
+
+.finding-field {
+  margin-top: 12px;
+  /* Try to keep the whole field (label + content) together on one page.
+     This is "avoid" not "always", so very long fields can still split. */
+  page-break-inside: avoid;
+  break-inside: avoid;
+}
+.finding-field .field-label {
+  font-size: 7.5pt;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--text-light);
+  margin-bottom: 4px;
+  /* Never leave the label alone at the bottom of a page. */
+  page-break-after: avoid;
+  break-after: avoid;
+}
+.finding-field p {
+  margin: 4px 0 8px 0;
+  font-size: 9.5pt;
+  line-height: 1.55;
+}
+
+/* CVSS badge */
+.cvss-badge {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 12px;
+  font-size: 8.5pt;
+  font-weight: 700;
+  color: #fff;
+  margin-left: 4px;
+}
+
+/* ----------------------------------------------------------------
+   SEVERITY BADGE
+   ---------------------------------------------------------------- */
+.severity {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 10px;
+  font-size: 7.5pt;
+  font-weight: 700;
+  color: #fff;
+  letter-spacing: 0.5px;
+}
+
+/* ----------------------------------------------------------------
+   OBSERVATIONS — flat, no card
+   ---------------------------------------------------------------- */
+.obs-card {
+  margin: 0 0 22px 0;
+}
+.obs-card + .obs-card {
+  border-top: 1px solid var(--border-soft);
+  padding-top: 14px;
+}
+.obs-card h4 {
+  margin: 0 0 6px 0;
+  font-size: 11.5pt;
+  color: var(--text);
+  font-weight: 700;
+}
+.obs-card p {
+  margin: 2px 0;
+  font-size: 9.5pt;
+  color: var(--text-light);
+}
+
+/* ----------------------------------------------------------------
+   TABLES — fixed layout to prevent overflow
+   ---------------------------------------------------------------- */
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 12px 0;
+  font-size: 8.5pt;
+  table-layout: fixed;
+  word-wrap: break-word;
+  overflow-wrap: anywhere;
+}
+th, td {
+  padding: 8px 12px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+th {
+  background: #f8fafc;
+  font-weight: 700;
+  font-size: 7.5pt;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  color: var(--text-light);
+  border-bottom: 2px solid var(--border);
+}
+tr:nth-child(even) td { background: #fafbfc; }
+
+/* Stats-row table should not wrap */
+.stats-row {
+  table-layout: auto;
+}
+
+/* ----------------------------------------------------------------
+   CREDENTIALS — one entry per credential, label/value rows
+   ---------------------------------------------------------------- */
+.cred-entry {
+  margin: 0 0 18px 0;
+  page-break-inside: avoid;
+}
+.cred-entry + .cred-entry {
+  border-top: 1px solid var(--border-soft);
+  padding-top: 14px;
+}
+
+.cred-header {
+  margin-bottom: 8px;
+}
+.cred-name {
+  font-size: 11pt;
+  font-weight: 700;
+  color: var(--text);
+  margin-right: 10px;
+}
+.cred-type {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 3px;
+  font-size: 7.5pt;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  background: #ede9fe;
+  color: #5b21b6;
+  vertical-align: 2px;
+}
+
+.cred-fields {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  margin: 0;
+}
+.cred-fields td {
+  padding: 3px 0;
+  border: none;
+  background: transparent !important;
+  vertical-align: top;
+  font-size: 9pt;
+}
+.cred-fields tr:nth-child(even) td { background: transparent !important; }
+
+.cred-label {
+  width: 130px;
+  font-size: 7.5pt;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--text-light);
+  padding-right: 14px !important;
+  white-space: nowrap;
+}
+.cred-value {
+  color: var(--text);
+  word-break: break-all;
+}
+.cred-mono {
+  font-family: "SF Mono", "Fira Code", "Consolas", monospace;
+  font-size: 8pt;
+  color: #334155;
+}
+
+/* Banner shown at the top of the credentials section, indicating whether
+   secrets are visible or masked in this PDF copy. */
+.cred-banner {
+  margin: 0 0 16px 0;
+  padding: 10px 14px;
+  font-size: 8.5pt;
+  line-height: 1.5;
+  border-radius: 4px;
+}
+.cred-banner code {
+  font-family: "SF Mono", "Fira Code", "Consolas", monospace;
+  background: rgba(255,255,255,0.6);
+  color: #334155;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 8pt;
+}
+.cred-banner-masked {
+  background: #eff6ff;
+  border-left: 3px solid #3b82f6;
+  color: #1e3a8a;
+}
+.cred-banner-masked strong { color: #1e3a8a; }
+.cred-banner-unmasked {
+  background: #fef2f2;
+  border-left: 3px solid #e11d48;
+  color: #881337;
+}
+.cred-banner-unmasked strong { color: #881337; }
+
+/* "[REDACTED — N chars]" inline placeholder used in masked mode */
+.cred-redacted {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 3px;
+  background: #f1f5f9;
+  color: var(--text-muted);
+  font-family: "SF Mono", "Fira Code", "Consolas", monospace;
+  font-size: 7.5pt;
+  letter-spacing: 0.3px;
+}
+
+/* ----------------------------------------------------------------
+   RECON SECTION — flat, compact, no per-table header
+   ---------------------------------------------------------------- */
+.recon-type-heading {
+  font-weight: 700;
+  font-size: 10pt;
+  color: var(--text);
+  margin: 20px 0 0 0;
+  padding: 0 0 4px 0;
+  border-bottom: 2px solid var(--border);
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  page-break-after: avoid;
+}
+.recon-type-heading .recon-count {
+  font-weight: 500;
+  font-size: 8.5pt;
+  color: var(--text-light);
+  text-transform: none;
+  letter-spacing: 0;
+  margin-left: 8px;
+}
+
+.recon-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  margin: 0 0 8px 0;
+  font-size: 8.5pt;
+}
+.recon-table td {
+  padding: 6px 10px 6px 0;
+  border: none;
+  border-bottom: 1px solid var(--border-soft);
+  background: transparent !important;
+  vertical-align: top;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+.recon-table tr:last-child td { border-bottom: none; }
+.recon-table tr:nth-child(even) td { background: transparent !important; }
+.recon-table .recon-name {
+  font-weight: 600;
+  color: var(--text);
+  padding-right: 14px;
+}
+.recon-table .recon-details {
+  color: var(--text-light);
+  font-size: 8pt;
+  line-height: 1.5;
+}
+.recon-table .recon-more {
+  text-align: center;
+  color: var(--text-muted);
+  font-style: italic;
+  padding: 8px 0;
+}
+
+/* ----------------------------------------------------------------
+   INFO CARDS — flat
+   ---------------------------------------------------------------- */
+.info-card {
+  margin: 0 0 22px 0;
+}
+.info-card + .info-card {
+  border-top: 1px solid var(--border-soft);
+  padding-top: 14px;
+}
+.info-card h4 {
+  margin: 0 0 8px 0;
+  font-size: 11pt;
+  color: var(--text);
+  font-weight: 700;
+}
+
+/* ----------------------------------------------------------------
+   MARKDOWN CONTENT — single source of truth for any AI-rendered
+   markdown (methodology, technical analysis, proof of concept,
+   notes, observations, info cards).
+
+   This is the PDF mirror of the React MethodologyReport component
+   (frontend/src/components/assessment/MethodologyReport.jsx). When
+   you tweak one, tweak the other: that's the contract that lets
+   the report look identical to what users see in the UI.
+
+   Size mapping (Tailwind → PDF points):
+     text-xs  (12px) → 8.5pt
+     text-sm  (14px) → 9.5pt
+     text-base(16px) → 11pt
+     text-lg  (18px) → 12.5pt
+     text-xl  (20px) → 14pt
+   ---------------------------------------------------------------- */
+.md-content {
+  font-size: 9.5pt;
+  line-height: 1.6;
+  color: #404040;          /* text-neutral-700 */
+}
+.md-content > *:first-child { margin-top: 0; }
+.md-content > *:last-child  { margin-bottom: 0; }
+
+/* Headings — mirror prose-sm + the explicit overrides in the React UI. */
+.md-content h1 {
+  font-size: 14pt;
+  font-weight: 700;
+  color: #171717;          /* text-neutral-900 */
+  margin: 14px 0 8px 0;
+  border: none;
+  padding: 0;
+  letter-spacing: 0;
+}
+.md-content h1:first-child { margin-top: 2px; }
+
+.md-content h2 {
+  font-size: 12.5pt;
+  font-weight: 600;
+  color: #262626;          /* text-neutral-800 */
+  margin: 18px 0 8px 0;
+  padding-bottom: 3px;
+  border: none;
+  border-bottom: 1px solid #e5e5e5;   /* border-neutral-200 */
+  letter-spacing: 0;
+}
+.md-content h2:first-child { margin-top: 2px; }
+
+.md-content h3 {
+  font-size: 11pt;
+  font-weight: 600;
+  color: #404040;          /* text-neutral-700 */
+  margin: 12px 0 6px 0;
+}
+.md-content h3:first-child { margin-top: 2px; }
+
+.md-content h4 {
+  font-size: 9.5pt;
+  font-weight: 600;
+  color: #525252;          /* text-neutral-600 */
+  margin: 10px 0 3px 0;
+}
+
+/* Paragraphs */
+.md-content p {
+  font-size: 9.5pt;
+  color: #404040;
+  line-height: 1.6;
+  margin: 0 0 6px 0;
+}
+
+/* Lists */
+.md-content ul,
+.md-content ol {
+  font-size: 9.5pt;
+  color: #525252;
+  margin: 0 0 10px 0;
+  padding-left: 22px;
+}
+.md-content ul { list-style: disc; }
+.md-content ol { list-style: decimal; }
+.md-content li { margin: 2px 0; line-height: 1.55; }
+
+/* Emphasis */
+.md-content strong {
+  font-weight: 600;
+  color: #262626;          /* text-neutral-800 */
+}
+.md-content em {
+  font-style: italic;
+  color: #525252;          /* text-neutral-600 */
+}
+
+/* Inline code — light bg, dark text, NOT pink */
+.md-content code {
+  font-family: "SF Mono", "Fira Code", "Consolas", "Courier New", monospace;
+  font-size: 8.5pt;
+  background: #f5f5f5;     /* bg-neutral-100 */
+  color: #262626;          /* text-neutral-800 */
+  padding: 1px 5px;
+  border-radius: 3px;
+  word-break: break-all;
+}
+
+/* Fenced code blocks — dark theme, mirror UI */
+.md-content pre {
+  font-family: "SF Mono", "Fira Code", "Consolas", "Courier New", monospace;
+  font-size: 8pt;
+  line-height: 1.5;
+  background: #171717;     /* bg-neutral-900 */
+  color: #f5f5f5;          /* text-neutral-100 */
+  border: none;
+  border-radius: 4px;
+  padding: 10px 12px;
+  margin: 8px 0;
+  white-space: pre-wrap;
+  word-break: break-all;
+  overflow-wrap: anywhere;
+}
+.md-content pre code {
+  background: transparent;
+  color: inherit;
+  padding: 0;
+  font-size: inherit;
+  word-break: inherit;
+  border-radius: 0;
+}
+
+/* Blockquotes */
+.md-content blockquote {
+  border-left: 4px solid #d4d4d4;   /* border-neutral-300 */
+  padding: 2px 0 2px 14px;
+  margin: 10px 0;
+  color: #737373;                    /* text-neutral-500 */
+  font-style: italic;
+  font-size: 9pt;
+}
+.md-content blockquote p { color: inherit; margin: 2px 0; }
+
+/* Tables */
+.md-content table {
+  width: 100%;
+  border-collapse: collapse;
+  border: 1px solid #e5e5e5;         /* border-neutral-200 */
+  margin: 10px 0;
+  font-size: 8.5pt;
+}
+.md-content thead { background: #f5f5f5; }    /* bg-neutral-100 */
+.md-content th {
+  text-align: left;
+  font-weight: 600;
+  color: #404040;
+  font-size: 7.5pt;
+  text-transform: none;
+  letter-spacing: 0;
+  padding: 6px 10px;
+  border: 1px solid #e5e5e5;
+}
+.md-content td {
+  padding: 6px 10px;
+  color: #525252;
+  font-size: 8.5pt;
+  border: 1px solid #e5e5e5;
+  vertical-align: top;
+  background: transparent !important;
+}
+.md-content tr:nth-child(even) td { background: transparent !important; }
+
+/* Horizontal rule */
+.md-content hr {
+  border: none;
+  border-top: 1px solid #e5e5e5;
+  margin: 16px 0;
+}
+
+/* Links */
+.md-content a {
+  color: var(--primary);
+  word-break: break-all;
+}
+
+/* ----------------------------------------------------------------
+   AI DISCLAIMER — owns the very last page of the report
+   The wrapper forces a fresh page; the inner block sits at the bottom
+   so the disclaimer reads like a closing signature instead of running
+   into whatever finished above it.
+   ---------------------------------------------------------------- */
+.ai-disclaimer-page {
+  page-break-before: always;
+  break-before: page;
+  /* Push the disclaimer toward the bottom of its page so the report
+     closes with a signature-style notice instead of a floating block. */
+  padding-top: 78%;
+}
+.ai-disclaimer {
+  padding: 18px 22px;
+  border-top: 2px solid var(--border);
+  border-bottom: 2px solid var(--border);
+  background: transparent;
+  font-size: 9pt;
+  color: var(--text-light);
+  line-height: 1.55;
+  page-break-inside: avoid;
+}
+.ai-disclaimer-title {
+  font-size: 8pt;
+  font-weight: 700;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: var(--text);
+  margin-bottom: 10px;
+}
+.ai-disclaimer p {
+  margin: 0 0 8px 0;
+}
+.ai-disclaimer p:last-child { margin-bottom: 0; }
+
+/* ----------------------------------------------------------------
+   MISC
+   ---------------------------------------------------------------- */
+.text-muted { color: var(--text-muted); font-size: 8.5pt; }
+.page-break { page-break-before: always; }
+a { color: var(--primary); text-decoration: none; }
+p { margin: 4px 0; }

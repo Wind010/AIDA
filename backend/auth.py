@@ -7,7 +7,7 @@ import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Tuple
 
-from fastapi import Depends, HTTPException, Request, status
+from fastapi import Depends, HTTPException, Query, Request, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from jose import JWTError, jwt
 from passlib.context import CryptContext
@@ -208,9 +208,14 @@ def _ip_matches_policy(client_host: Optional[str], policy: str) -> bool:
 async def verify_mcp_api_key(
     request: Request,
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+    api_key: Optional[str] = Query(None, alias="api_key"),
     db: Session = Depends(get_db),
 ) -> ApiKey:
     """Dependency: validate a Bearer API key for ``/mcp``.
+
+    Accepts the key as an ``Authorization: Bearer`` header or as an
+    ``?api_key=`` query parameter (used by clients that cannot set headers,
+    e.g. claude.ai remote connectors).
 
     - 503 if HTTP MCP is disabled in platform settings.
     - 403 if the client IP is not allowed under the configured network policy.
@@ -230,14 +235,13 @@ async def verify_mcp_api_key(
             detail=f"Client {client_host} not permitted by network policy '{policy}'",
         )
 
-    if credentials is None or not credentials.credentials:
+    token = (credentials.credentials if credentials and credentials.credentials else None) or api_key
+    if not token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="API key required",
             headers={"WWW-Authenticate": "Bearer"},
         )
-
-    token = credentials.credentials
     if len(token) < API_KEY_PREFIX_LEN or not token.startswith("aida_sk_"):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

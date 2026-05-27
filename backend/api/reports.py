@@ -21,9 +21,18 @@ router = APIRouter(prefix="/assessments/{assessment_id}/report", tags=["reports"
 async def download_pdf_report(
     request: Request,
     assessment_id: int,
+    include_secrets: bool = False,
     db: Session = Depends(get_db),
 ):
-    """Generate and download a PDF pentest report for the assessment."""
+    """Generate and download a PDF pentest report for the assessment.
+
+    Query params:
+        include_secrets: When true, credential secrets (password, token,
+            cookie, custom JSON) are embedded in clear text. Defaults to
+            false — secrets are masked so the PDF is safe to share. The
+            filename also gains a ``_with_creds`` suffix when secrets are
+            included, so a reviewer can spot the variant at a glance.
+    """
 
     # Verify assessment exists
     assessment = db.query(Assessment).filter(Assessment.id == assessment_id).first()
@@ -34,7 +43,9 @@ async def download_pdf_report(
         )
 
     try:
-        pdf_buffer = generate_pdf_report(db, assessment_id)
+        pdf_buffer = await generate_pdf_report(
+            db, assessment_id, include_secrets=include_secrets
+        )
     except Exception as e:
         logger.error("Report generation failed", assessment_id=assessment_id, error=str(e))
         raise HTTPException(
@@ -44,7 +55,8 @@ async def download_pdf_report(
 
     # Sanitize filename
     safe_name = "".join(c if c.isalnum() or c in " -_" else "_" for c in assessment.name)
-    filename = f"AIDA_Report_{safe_name}.pdf"
+    suffix = "_with_creds" if include_secrets else ""
+    filename = f"AIDA_Report_{safe_name}{suffix}.pdf"
 
     return StreamingResponse(
         pdf_buffer,

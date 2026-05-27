@@ -36,18 +36,35 @@ Generates `.aida/mcp-config.json` pointing at the backend venv's Python. No netw
 4. Click **Create API key**, copy the value shown once.
 5. Paste the generated snippet into your MCP client's config. For Claude Code:
 
+The endpoint is reachable at three URLs depending on how AIDA was started:
+
+| Mode | URL |
+|------|-----|
+| Local (default) | `http://localhost:31337/mcp` (via Nginx) or `http://localhost:8000/mcp` (direct backend) |
+| `--lan` | `https://<LAN_IP>/mcp` (via Caddy) |
+| `--domain example.com` | `https://example.com/mcp` (via Caddy + Let's Encrypt) |
+
 ```bash
+# Local
 claude mcp add --transport http aida http://localhost:8000/mcp \
+  --header "Authorization: Bearer aida_sk_..."
+
+# LAN — use the LAN IP shown by ./start.sh --lan
+claude mcp add --transport http aida https://192.168.1.42/mcp \
+  --header "Authorization: Bearer aida_sk_..."
+
+# Public domain
+claude mcp add --transport http aida https://aida.example.com/mcp \
   --header "Authorization: Bearer aida_sk_..."
 ```
 
-Or in a client's `mcp.json`:
+In a client's `mcp.json`:
 
 ```json
 {
   "mcpServers": {
     "aida": {
-      "url": "http://localhost:8000/mcp",
+      "url": "https://aida.example.com/mcp",
       "headers": { "Authorization": "Bearer aida_sk_..." }
     }
   }
@@ -66,7 +83,10 @@ python3 aida.py --http http://localhost:8000/mcp --mcp-api-key aida_sk_...
 - **Keys are bcrypt-hashed** at rest; the plaintext is shown exactly once on creation.
 - **Revocation is instant** via the Settings UI.
 - **Network policy** is enforced at the application layer even when the socket binds to 0.0.0.0.
-- **No TLS in-process** — put nginx/Caddy in front for WAN exposure.
+- **TLS is optional and mode-driven.** In `./start.sh --lan` and `./start.sh --domain` modes,
+  Caddy fronts the backend and the MCP endpoint is also reachable at
+  `https://<host>/mcp`. In default local mode there is no TLS — `http://localhost:8000/mcp`
+  is fine because the traffic stays on your machine. See [`TLS.md`](TLS.md).
 
 ---
 

@@ -57,9 +57,18 @@ if [[ "$RUNNING" -eq 0 ]]; then
     exit 0
 fi
 
-# Detect active mode: if port 31337 is mapped, prod stack is running
-if $COMPOSE_CMD -f docker-compose.yml -f docker-compose.prod.yml ps --format "{{.Ports}}" 2>/dev/null | grep -q "31337"; then
-    log "Prod/LAN stack detected — stopping with prod compose files..."
+# Detect active mode by container name (works for running AND stopped):
+#   aida_caddy exists           → TLS prod
+#   aida_frontend bound to 31337 → local prod
+#   otherwise                    → dev
+ALL_NAMES=$(docker ps -a --format "{{.Names}}" 2>/dev/null || true)
+
+if echo "$ALL_NAMES" | grep -q "^aida_caddy$"; then
+    log "TLS prod stack detected — stopping with prod + tls compose files..."
+    STOP_FILES="-f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.tls.yml"
+elif echo "$ALL_NAMES" | grep -q "^aida_frontend$" \
+     && docker inspect aida_frontend --format '{{json .HostConfig.PortBindings}}' 2>/dev/null | grep -q "31337"; then
+    log "Local prod stack detected — stopping with prod compose files..."
     STOP_FILES="-f docker-compose.yml -f docker-compose.prod.yml"
 else
     STOP_FILES=""

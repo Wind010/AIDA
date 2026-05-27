@@ -28,15 +28,19 @@ cd AIDA
 ./start.sh
 ```
 
-Open **http://localhost:31337** — production mode (Nginx) by default.
+Open **http://localhost:31337** — local mode (Nginx, plain HTTP) by default.
 
-Pre-built images are pulled from Docker Hub — no local build needed.
+The backend image is pulled from Docker Hub. The frontend (Nginx) is always built locally so that `VITE_API_URL=/api` is correctly baked in at compile time.
 
 This starts:
-- **PostgreSQL** on port `5432` - The database
-- **Backend API** on port `8000` - FastAPI server
+- **PostgreSQL** on port `5432` - The database (localhost only)
+- **Backend API** on port `8000` - FastAPI server (localhost only)
 - **Frontend (Nginx)** on port `31337` - Web dashboard
 - **aida-pentest** - Built-in pentesting container (~2 GB)
+
+> **Sharing on a network or deploying with a domain?** See [`TLS.md`](TLS.md)
+> for `./start.sh --lan` (HTTPS over your LAN) and `./start.sh --domain`
+> (HTTPS with Let's Encrypt).
 
 ### Step 3: First-Run Setup
 
@@ -306,22 +310,27 @@ One script, three modes:
 
 | Command | Description |
 |---------|-------------|
-| `./start.sh` | Production mode — Nginx on `localhost:31337` (default) |
-| `./start.sh --lan` | Production + LAN — accessible from your network |
-| `./start.sh --dev` | Development — Vite hot reload on `localhost:5173` |
+| `./start.sh` | Local — `http://localhost:31337`, no TLS (default) |
+| `./start.sh --lan` | LAN — `https://<LAN_IP>`, Caddy + self-signed cert |
+| `./start.sh --domain X.Y` | Public — `https://X.Y`, Caddy + Let's Encrypt |
+| `./start.sh --dev` | Dev — `http://localhost:5173`, Vite hot reload |
 | `./stop.sh` | Stop all services — data is preserved |
 | `./restart.sh` | Restart all services and wait for health checks |
 
-Switching between modes is safe — your database and all data are preserved.
+Switching between modes is safe — `start.sh` tears down the old stack first
+and your Postgres data volume is never touched.
 
 ```bash
-# Production (default)
+# Local-only (default)
 ./start.sh
 
-# Share on LAN (auto-detects IP, configures CORS)
+# Share on your network (HTTPS with self-signed cert)
 ./start.sh --lan
 
-# Development (contributors — Vite hot reload)
+# Deploy with a real domain (Let's Encrypt)
+./start.sh --domain aida.example.com --email admin@example.com
+
+# Development (Vite hot reload)
 ./start.sh --dev
 
 # Stop / restart
@@ -329,11 +338,81 @@ Switching between modes is safe — your database and all data are preserved.
 ./restart.sh
 ```
 
+> Full TLS reference → [`TLS.md`](TLS.md)
+
 ---
 
 ## Troubleshooting
 
-TODO
+### "Backend not reachable" in the web UI (default `./start.sh`)
+
+This means the frontend loaded but can't reach the API. In default mode, Nginx proxies `/api` requests to the backend container over Docker's internal network. If that path is broken, the UI shows this banner even though the backend is running.
+
+**Step 1 — Check the backend is actually healthy:**
+```bash
+curl http://localhost:8000/health
+# Expected: {"status":"healthy"}
+```
+
+**Step 2 — Check Nginx can reach the backend:**
+```bash
+docker logs aida_frontend --tail 20
+# Look for "connect() failed" or "no live upstreams" — confirms a network issue
+```
+
+**Step 3 — Ubuntu: check Docker bridge networking (most common cause)**
+
+On Ubuntu, `ufw` with `DEFAULT_FORWARD_POLICY=DROP` blocks Docker's inter-container traffic. This only affects prod mode (which uses Nginx as a proxy between containers) — dev mode works because the browser hits `localhost:8000` directly.
+
+Check the current policy:
+```bash
+sudo grep DEFAULT_FORWARD_POLICY /etc/default/ufw
+```
+
+If it says `DROP`, fix it:
+```bash
+sudo sed -i 's/DEFAULT_FORWARD_POLICY="DROP"/DEFAULT_FORWARD_POLICY="ACCEPT"/' /etc/default/ufw
+sudo ufw reload
+```
+
+Then restart the stack:
+```bash
+./stop.sh && ./start.sh
+```
+
+> **Why does `--dev` work but default mode doesn't?**  
+> In dev mode, `VITE_API_URL=http://localhost:8000/api` — the browser calls the backend directly via the published host port. No Docker networking is needed. In default mode, Nginx (in the frontend container) must route to the backend container over `aida-network`. If the Docker bridge forward policy is `DROP`, that intra-container traffic is blocked.
+
+**Step 4 — Verify containers are on the same network:**
+```bash
+docker network inspect aida-network --format '{{range .Containers}}{{.Name}} {{end}}'
+# Should list: aida_backend aida_frontend aida_postgres aida_docker_proxy
+```
+
+---
+
+### Frontend timeout during `./start.sh` ("TIMEOUT" then exits with error)
+
+The Nginx build can take 2–5 minutes on first run (npm install + Vite build). If you see a timeout, re-run `./start.sh` — it will detect the already-running containers and skip the startup.
+
+---
+
+### Port 31337 already in use
+
+```bash
+# Find what's using it
+sudo ss -tlnp | grep 31337
+# Or
+sudo lsof -i :31337
+
+# Kill the process or change AIDA_PORT in start.sh
+```
+
+---
+
+### Docker pull fails (no internet / private mirror)
+
+`start.sh` automatically falls back to building the backend from source if the Hub pull fails. The frontend is always built locally regardless. A full build takes ~5 minutes on first run.
 
 ---
 
@@ -341,6 +420,7 @@ TODO
 
 - [**User Guide**](USER_GUIDE.md) - Learn how to use the platform
 - [**MCP Tools Reference**](MCP_TOOLS.md) - All available tools for your AI
+- [**TLS Setup**](TLS.md) - LAN sharing and Let's Encrypt for public domains
 - [**Architecture**](ARCHITECTURE.md) - Technical deep dive
 
 ---

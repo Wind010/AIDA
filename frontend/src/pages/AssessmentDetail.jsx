@@ -1,12 +1,10 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { Target, Server, Shield, ArrowLeft, AlertTriangle, Info, Eye, TrendingUp, Filter, FolderOpen, RefreshCw, FileText, Download, Send, Play, Copy, Check, Plus } from '../components/icons';
+import { Target, Server, Shield, ArrowLeft, AlertTriangle, Info, Eye, TrendingUp, Filter, FolderOpen, RefreshCw, Download, Send, Play, Copy, Check, Plus, ChevronDown } from '../components/icons';
 import apiClient from '../services/api';
 import workspaceService from '../services/workspaceService';
 import EditableField from '../components/common/EditableField';
 import ReconTable from '../components/assessment/ReconTable';
-import PhaseSection from '../components/assessment/PhaseSection';
-import PhaseContentViewSimple from '../components/assessment/PhaseContentViewSimple';
 import CardsTable from '../components/assessment/CardsTable';
 import CommandHistoryRefactored from '../components/assessment/CommandHistoryRefactored';
 import ImportScanModal from '../components/assessment/ImportScanModal';
@@ -16,10 +14,9 @@ import AttackTimeline from '../components/assessment/AttackTimeline';
 import SendReportModal from '../components/assessment/SendReportModal';
 
 import ChangeContainerModal from '../components/workspace/ChangeContainerModal';
-import MarkdownDocumentsModal from '../components/assessment/MarkdownDocumentsModal';
+import MethodologyReport from '../components/assessment/MethodologyReport';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { getSeverityBarClass, SEVERITY_ORDER } from '../utils/severity';
-import { PHASE_NAMES } from '../utils/phases';
 
 // Group order: findings first, then observations, then info
 const CARD_TYPE_ORDER = { finding: 3, observation: 2, info: 1 };
@@ -44,17 +41,17 @@ const AssessmentDetail = () => {
   const [reconData, setReconData] = useState([]);
   const [reconCategories, setReconCategories] = useState(['endpoint', 'subdomain', 'service', 'technology']);
   const [cards, setCards] = useState([]);
-  const [sections, setSections] = useState([]);
   const [commands, setCommands] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [activePhase, setActivePhase] = useState(1); // Phase 1 par défaut
   const [cardFilter, setCardFilter] = useState('overview'); // Filter for cards view
   const [addCardTrigger, setAddCardTrigger] = useState(0);
   const [showImportModal, setShowImportModal] = useState(false);
   const [openingWorkspace, setOpeningWorkspace] = useState(false);
   const [showChangeContainerModal, setShowChangeContainerModal] = useState(false);
-  const [showMarkdownModal, setShowMarkdownModal] = useState(false);
+
   const [exportingPdf, setExportingPdf] = useState(false);
+  const [showPdfMenu, setShowPdfMenu] = useState(false);
+  const pdfMenuRef = useRef(null);
   const [showSendReport, setShowSendReport] = useState(false);
   const [showStartAI, setShowStartAI] = useState(false);
   const [copiedCmd, setCopiedCmd] = useState(false);
@@ -63,8 +60,20 @@ const AssessmentDetail = () => {
   const [showMcpNotice, setShowMcpNotice] = useState(false);
   const startAIRef = useRef(null);
 
+  // Close the PDF export menu when clicking outside it.
+  useEffect(() => {
+    if (!showPdfMenu) return;
+    const onDown = (e) => {
+      if (pdfMenuRef.current && !pdfMenuRef.current.contains(e.target)) {
+        setShowPdfMenu(false);
+      }
+    };
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, [showPdfMenu]);
+
   // WebSocket connection for real-time updates
-  const { subscribe, isConnected } = useWebSocket(id);
+  const { subscribe } = useWebSocket(id);
 
   useEffect(() => {
     loadAssessment();
@@ -123,21 +132,6 @@ const AssessmentDetail = () => {
       setReconData(prev => prev.filter(recon => recon.id !== data.recon_id));
     });
 
-    // Section events
-    const unsubscribeSectionUpdated = subscribe('section_updated', (data) => {
-
-      setSections(prev => {
-        const index = prev.findIndex(s => s.id === data.section.id);
-        if (index >= 0) {
-          const newSections = [...prev];
-          newSections[index] = data.section;
-          return newSections;
-        } else {
-          return [...prev, data.section];
-        }
-      });
-    });
-
     // Command events
     const unsubscribeCommandCompleted = subscribe('command_completed', (data) => {
 
@@ -163,7 +157,6 @@ const AssessmentDetail = () => {
       unsubscribeReconAdded();
       unsubscribeReconUpdated();
       unsubscribeReconDeleted();
-      unsubscribeSectionUpdated();
       unsubscribeCommandCompleted();
       unsubscribeCommandFailed();
       unsubscribeAssessmentUpdated();
@@ -175,12 +168,11 @@ const AssessmentDetail = () => {
       setLoading(true);
 
       // Load all data in parallel
-      const [assessmentRes, reconRes, reconTypesRes, cardsRes, sectionsRes, commandsRes] = await Promise.all([
+      const [assessmentRes, reconRes, reconTypesRes, cardsRes, commandsRes] = await Promise.all([
         apiClient.get(`/assessments/${id}`),
         apiClient.get(`/assessments/${id}/recon`),
         apiClient.get(`/assessments/${id}/recon/types`),
         apiClient.get(`/assessments/${id}/cards`),
-        apiClient.get(`/assessments/${id}/sections`),
         apiClient.get(`/assessments/${id}/commands?limit=10000`),
       ]);
 
@@ -188,7 +180,6 @@ const AssessmentDetail = () => {
       setReconData(reconRes.data);
       setReconCategories(reconTypesRes.data.length > 0 ? reconTypesRes.data : reconCategories);
       setCards(cardsRes.data);
-      setSections(sectionsRes.data);
       setCommands(commandsRes.data);
     } catch (error) {
       console.error('Failed to load assessment:', error);
@@ -200,22 +191,26 @@ const AssessmentDetail = () => {
   const updateAssessment = async (field, value) => {
     try {
       await apiClient.put(`/assessments/${id}`, { [field]: value });
-      setAssessment({ ...assessment, [field]: value });
+      setAssessment(prev => ({ ...prev, [field]: value }));
     } catch (error) {
       console.error('Failed to update assessment:', error);
     }
   };
 
-  const handleExportPdf = async () => {
+  const handleExportPdf = async ({ includeSecrets = false } = {}) => {
+    setShowPdfMenu(false);
     setExportingPdf(true);
     try {
       const response = await apiClient.get(`/assessments/${id}/report/pdf`, {
+        params: { include_secrets: includeSecrets },
         responseType: 'blob',
       });
       const url = window.URL.createObjectURL(new Blob([response.data], { type: 'application/pdf' }));
+      const suffix = includeSecrets ? '_with_creds' : '';
+      const safeName = assessment.name.replace(/[^a-zA-Z0-9 _-]/g, '_');
       const link = document.createElement('a');
       link.href = url;
-      link.setAttribute('download', `AIDA_Report_${assessment.name.replace(/[^a-zA-Z0-9 _-]/g, '_')}.pdf`);
+      link.setAttribute('download', `AIDA_Report_${safeName}${suffix}.pdf`);
       document.body.appendChild(link);
       link.click();
       link.remove();
@@ -301,11 +296,10 @@ const AssessmentDetail = () => {
       low: findings.filter(f => f.severity === 'LOW').length,
       commands: commands.length,
       recon: reconData.length,
-      phases: sections.length,
       recentCards: recentCards.length,
       last24hCards: last24hCards.length
     };
-  }, [cards, commands, reconData, sections]);
+  }, [cards, commands, reconData]);
 
   // Filter cards based on selected filter
   const filteredCards = useMemo(() => {
@@ -339,6 +333,15 @@ const AssessmentDetail = () => {
     }
     return [...result].sort(sortByScore);
   }, [cards, cardFilter]);
+
+  // Recon categories sorted by item count (descending) — counts precomputed to avoid O(n²) in sort
+  const sortedReconCategories = useMemo(() => {
+    const counts = {};
+    for (const item of reconData) {
+      counts[item.data_type] = (counts[item.data_type] || 0) + 1;
+    }
+    return [...reconCategories].sort((a, b) => (counts[b] || 0) - (counts[a] || 0));
+  }, [reconData, reconCategories]);
 
   // Calculate risk distribution percentages
   const getRiskDistribution = () => {
@@ -452,32 +455,61 @@ const AssessmentDetail = () => {
               </>
             )}
           </button>
-          <button
-            onClick={() => setShowMarkdownModal(true)}
-            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-neutral-700 dark:text-neutral-300 bg-neutral-50 dark:bg-neutral-700/50 border border-neutral-200 dark:border-neutral-600 hover:bg-neutral-100 dark:hover:bg-neutral-700 hover:border-neutral-300 dark:hover:border-neutral-500 rounded-md transition-colors"
-            title="View markdown documents"
-          >
-            <FileText className="w-3.5 h-3.5" />
-            <span>Docs</span>
-          </button>
-          <button
-            onClick={handleExportPdf}
-            disabled={exportingPdf}
-            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-neutral-700 dark:text-neutral-300 bg-neutral-50 dark:bg-neutral-700/50 border border-neutral-200 dark:border-neutral-600 hover:bg-neutral-100 dark:hover:bg-neutral-700 hover:border-neutral-300 dark:hover:border-neutral-500 rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-            title="Export PDF report"
-          >
-            {exportingPdf ? (
-              <>
-                <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                <span>Generating...</span>
-              </>
-            ) : (
-              <>
-                <Download className="w-3.5 h-3.5" />
-                <span>PDF</span>
-              </>
+
+          <div ref={pdfMenuRef} className="relative inline-flex">
+            <button
+              onClick={() => handleExportPdf({ includeSecrets: false })}
+              disabled={exportingPdf}
+              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-neutral-700 dark:text-neutral-300 bg-neutral-50 dark:bg-neutral-700/50 border border-neutral-200 dark:border-neutral-600 hover:bg-neutral-100 dark:hover:bg-neutral-700 hover:border-neutral-300 dark:hover:border-neutral-500 rounded-l-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              title="Export PDF — passwords and tokens are masked"
+            >
+              {exportingPdf ? (
+                <>
+                  <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                  <span>Generating...</span>
+                </>
+              ) : (
+                <>
+                  <Download className="w-3.5 h-3.5" />
+                  <span>PDF</span>
+                </>
+              )}
+            </button>
+            <button
+              onClick={() => setShowPdfMenu((v) => !v)}
+              disabled={exportingPdf}
+              className="inline-flex items-center px-1.5 py-1.5 text-xs text-neutral-700 dark:text-neutral-300 bg-neutral-50 dark:bg-neutral-700/50 border border-l-0 border-neutral-200 dark:border-neutral-600 hover:bg-neutral-100 dark:hover:bg-neutral-700 hover:border-neutral-300 dark:hover:border-neutral-500 rounded-r-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              title="More export options"
+              aria-haspopup="menu"
+              aria-expanded={showPdfMenu}
+            >
+              <ChevronDown className="w-3.5 h-3.5" />
+            </button>
+            {showPdfMenu && (
+              <div role="menu" className="absolute right-0 top-full mt-1 z-20 w-72 rounded-md border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 shadow-lg p-1 text-xs">
+                <button
+                  role="menuitem"
+                  onClick={() => handleExportPdf({ includeSecrets: false })}
+                  className="w-full text-left px-3 py-2 rounded hover:bg-neutral-100 dark:hover:bg-neutral-700/60"
+                >
+                  <div className="font-medium text-neutral-800 dark:text-neutral-100">Download PDF — secrets masked</div>
+                  <div className="mt-0.5 text-[11px] text-neutral-500 dark:text-neutral-400 leading-snug">
+                    Passwords, tokens and cookies replaced by <code className="font-mono">[REDACTED]</code>. Safe to share with the client.
+                  </div>
+                </button>
+                <button
+                  role="menuitem"
+                  onClick={() => handleExportPdf({ includeSecrets: true })}
+                  className="w-full text-left px-3 py-2 rounded hover:bg-rose-50 dark:hover:bg-rose-900/20"
+                >
+                  <div className="font-medium text-rose-700 dark:text-rose-300">Download PDF — include credentials</div>
+                  <div className="mt-0.5 text-[11px] text-neutral-500 dark:text-neutral-400 leading-snug">
+                    Plaintext passwords and tokens embedded. Internal use only — file is suffixed <code className="font-mono">_with_creds</code>.
+                  </div>
+                </button>
+              </div>
             )}
-          </button>
+          </div>
           <button
             onClick={() => setShowSendReport(true)}
             className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-neutral-700 dark:text-neutral-300 bg-neutral-50 dark:bg-neutral-700/50 border border-neutral-200 dark:border-neutral-600 hover:bg-neutral-100 dark:hover:bg-neutral-700 hover:border-neutral-300 dark:hover:border-neutral-500 rounded-md transition-colors"
@@ -580,14 +612,6 @@ const AssessmentDetail = () => {
               </div>
             )}
           </div>
-          <span className={`px-2 py-1 rounded-full text-xs font-medium ${assessment.status === 'in_progress'
-            ? 'bg-primary-100 dark:bg-primary-900/30 text-primary-700 dark:text-primary-300'
-            : assessment.status === 'completed'
-              ? 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300'
-              : 'bg-neutral-100 dark:bg-neutral-700 text-neutral-600 dark:text-neutral-300'
-            }`}>
-            {assessment.status}
-          </span>
         </div>
       </div>
 
@@ -726,11 +750,7 @@ const AssessmentDetail = () => {
         <h2 className="text-sm font-semibold text-gray-800 dark:text-neutral-100">Reconnaissance Data</h2>
         <div className="space-y-3">
           {/* Render categories in pairs (2 columns) */}
-          {[...reconCategories]
-            .sort((a, b) =>
-              reconData.filter(i => i.data_type === b).length -
-              reconData.filter(i => i.data_type === a).length
-            )
+          {sortedReconCategories
             .reduce((pairs, category, index, sorted) => {
               if (index % 2 === 0) pairs.push(sorted.slice(index, index + 2));
               return pairs;
@@ -966,56 +986,8 @@ const AssessmentDetail = () => {
         </div>
       </div>
 
-      {/* Assessment Phases - Vue Pleine Largeur Simple */}
-      <div>
-        {/* Navigation horizontale + Header */}
-        <div className="mb-6">
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="text-lg font-semibold text-gray-900 dark:text-neutral-100">Assessment Phases</h2>
-          </div>
-
-          {/* Navigation horizontale des phases */}
-          <div className="flex space-x-1 border-b border-gray-200 dark:border-neutral-700">
-            {[1, 2, 3, 4, 5].map((phaseNum) => {
-              const section = sections.find(s => s.section_type === `phase_${phaseNum}`);
-              const hasContent = section?.content;
-
-              return (
-                <button
-                  key={phaseNum}
-                  onClick={() => setActivePhase(phaseNum)}
-                  className={`px-4 py-3 text-sm font-medium border-b-2 transition-colors ${activePhase === phaseNum
-                    ? 'border-blue-500 text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/30'
-                    : 'border-transparent text-gray-500 dark:text-neutral-400 hover:text-gray-700 dark:hover:text-neutral-200 hover:border-gray-300 dark:hover:border-neutral-600'
-                    }`}
-                >
-                  <div className="flex items-center gap-2">
-                    <span>Phase {phaseNum}</span>
-                    {hasContent && (
-                      <div className="w-1.5 h-1.5 bg-green-500 rounded-full"></div>
-                    )}
-                  </div>
-                  <div className="text-xs text-gray-500 dark:text-neutral-400 mt-0.5">
-                    {PHASE_NAMES[phaseNum]}
-                  </div>
-                </button>
-              );
-            })}
-          </div>
-        </div>
-
-        {/* Contenu de la phase active - Pleine largeur */}
-        {activePhase && (
-          <PhaseContentViewSimple
-            phaseNumber={activePhase}
-            assessmentId={id}
-            section={sections.find(s => s.section_type === `phase_${activePhase}`)}
-            onUpdate={loadAssessment}
-            cards={cards.filter(c => c.section_number === activePhase)}
-            commands={commands.filter(c => c.phase?.includes(`Phase ${activePhase}`))}
-          />
-        )}
-      </div>
+      {/* Methodology Report */}
+      <MethodologyReport assessmentId={parseInt(id)} />
 
       {/* Command History - Version compacte et navigable */}
       <div className="bg-white dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded-lg">
@@ -1045,13 +1017,7 @@ const AssessmentDetail = () => {
         />
       )}
 
-      {/* Markdown Documents Modal */}
-      {showMarkdownModal && (
-        <MarkdownDocumentsModal
-          assessmentId={parseInt(id)}
-          onClose={() => setShowMarkdownModal(false)}
-        />
-      )}
+
 
       {/* First-time MCP notice modal */}
       {showMcpNotice && (

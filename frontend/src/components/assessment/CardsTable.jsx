@@ -5,9 +5,27 @@ import UnifiedModal from '../common/UnifiedModal';
 import CvssCalculator from './CvssCalculator';
 import apiClient from '../../services/api';
 
+const CHECKED_KEY = (id) => `aida-checked-cards-${id}`;
+
 const CardsTable = ({ cards, assessmentId, onUpdate, hideAddButton = false, externalTrigger = 0 }) => {
   const [expandedCards, setExpandedCards] = useState(new Set());
   const [copiedCardId, setCopiedCardId] = useState(null);
+  const [checkedCards, setCheckedCards] = useState(() => {
+    try {
+      const raw = localStorage.getItem(CHECKED_KEY(assessmentId));
+      return new Set(raw ? JSON.parse(raw) : []);
+    } catch { return new Set(); }
+  });
+
+  const toggleChecked = (cardId, e) => {
+    e.stopPropagation();
+    setCheckedCards(prev => {
+      const next = new Set(prev);
+      next.has(cardId) ? next.delete(cardId) : next.add(cardId);
+      try { localStorage.setItem(CHECKED_KEY(assessmentId), JSON.stringify([...next])); } catch {}
+      return next;
+    });
+  };
 
   // Modal state for Add/Edit
   const [showModal, setShowModal] = useState(false);
@@ -274,8 +292,25 @@ const CardsTable = ({ cards, assessmentId, onUpdate, hideAddButton = false, exte
           const sectionNumber = card.section_number || 'N/A';
           const isFalsePositive = card.status === 'false_positive';
 
+          const isChecked = checkedCards.has(card.id);
+
           return (
-            <div key={card.id} id={`card-${card.id}`} className={`flex border border-neutral-200 dark:border-neutral-700 rounded-lg overflow-hidden bg-white dark:bg-neutral-800 hover:border-neutral-300 dark:hover:border-neutral-600 transition-colors ${isFalsePositive ? 'opacity-50' : ''}`}>
+            <div key={card.id} id={`card-${card.id}`} className="flex items-center gap-2 group/row">
+            {/* Checkbox — hover-reveal, stays visible when checked */}
+            <label
+              className={`flex-shrink-0 cursor-pointer transition-opacity ${isChecked ? 'opacity-100' : 'opacity-0 group-hover/row:opacity-100'}`}
+              title="Marquer comme traité"
+              onClick={(e) => toggleChecked(card.id, e)}
+            >
+              <div className={`w-4 h-4 rounded border flex items-center justify-center transition-colors ${
+                isChecked
+                  ? 'bg-primary-600 border-primary-600 dark:bg-primary-500 dark:border-primary-500'
+                  : 'border-neutral-300 dark:border-neutral-600 bg-white dark:bg-neutral-800'
+              }`}>
+                {isChecked && <Check className="w-3 h-3 text-white" />}
+              </div>
+            </label>
+            <div className={`flex-1 flex border border-neutral-200 dark:border-neutral-700 rounded-lg overflow-hidden bg-white dark:bg-neutral-800 hover:border-neutral-300 dark:hover:border-neutral-600 transition-colors ${isFalsePositive ? 'opacity-50' : ''} ${isChecked ? 'opacity-40' : ''}`}>
               {/* Left color strip */}
               <div className={`w-1 flex-shrink-0 ${
                 cardType === 'finding'     ? getSeverityBarClass(severity) :
@@ -325,7 +360,7 @@ const CardsTable = ({ cards, assessmentId, onUpdate, hideAddButton = false, exte
                     </span>
 
                     {/* Title */}
-                    <span className="text-sm font-semibold text-neutral-900 dark:text-neutral-100 truncate">
+                    <span className={`text-sm font-semibold text-neutral-900 dark:text-neutral-100 truncate ${isChecked ? 'line-through text-neutral-400 dark:text-neutral-500' : ''}`}>
                       {title}
                     </span>
 
@@ -471,7 +506,8 @@ const CardsTable = ({ cards, assessmentId, onUpdate, hideAddButton = false, exte
                   </div>
                 </div>
               )}
-              </div>{/* end content wrapper */}
+              </div>
+            </div>
             </div>
           );
         })}

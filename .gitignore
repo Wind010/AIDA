@@ -73,3 +73,6 @@ switch-db.sh
 
 # Qwen internal files
 .qwen/
+
+# TLS — Caddyfile generated dynamically by start.sh in --lan / --domain mode
+/.aida/Caddyfile

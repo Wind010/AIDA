@@ -40,14 +40,11 @@ def _authenticate_ws(token: Optional[str]) -> Optional[User]:
 
 @router.websocket("/ws")
 async def websocket_global(websocket: WebSocket, token: Optional[str] = None):
+    """Global WebSocket endpoint - receives all events."""
     user = _authenticate_ws(token)
     if user is None:
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         return
-    """
-    Global WebSocket endpoint - receives all events
-    Use this when you want to listen to all system events
-    """
     try:
         await manager.connect(websocket)
 
@@ -111,17 +108,11 @@ async def websocket_assessment(
     assessment_id: int,
     token: Optional[str] = None,
 ):
+    """Assessment-specific WebSocket endpoint - only receives events for a given assessment."""
     user = _authenticate_ws(token)
     if user is None:
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         return
-    """
-    Assessment-specific WebSocket endpoint
-    Only receives events related to a specific assessment
-
-    Args:
-        assessment_id: The assessment ID to subscribe to
-    """
     try:
         await manager.connect(websocket, assessment_id=assessment_id)
 

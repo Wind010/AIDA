@@ -15,7 +15,8 @@
   <a href="#what-it-does">What It Does</a> •
   <a href="Docs/INSTALLATION.md">Installation</a> •
   <a href="Docs/USER_GUIDE.md">User Guide</a> •
-  <a href="Docs/MCP_TOOLS.md">Agent Tools</a>
+  <a href="Docs/MCP_TOOLS.md">Agent Tools</a> •
+  <a href="https://discord.gg/RVJTWtkVA2">Discord</a>
 </p>
 
 <p align="center">
@@ -24,6 +25,7 @@
   <img src="https://img.shields.io/badge/Models-Claude%20%7C%20Gemini%20%7C%20GPT%20%7C%20Any-green" alt="Models">
   <img src="https://img.shields.io/badge/Version-1.1.0-purple" alt="Version">
   <a href="https://github.com/Vasco0x4/AIDA/stargazers"><img src="https://img.shields.io/github/stars/Vasco0x4/AIDA?style=flat&label=Stars&color=gold" alt="GitHub Stars"></a>
+  <a href="https://discord.gg/RVJTWtkVA2"><img src="https://img.shields.io/badge/Discord-Join%20Community-5865F2?logo=discord&logoColor=white" alt="Discord"></a>
 </p>
 
 ---
@@ -102,7 +104,8 @@ cd AIDA
 Dashboard: `http://localhost:31337`
 
 > `./start.sh --dev` — hot reload for contributors
-> `./start.sh --lan` — share across your local network
+> `./start.sh --lan` — share across your local network (HTTPS, self-signed)
+> `./start.sh --domain x.com` — public deploy with Let's Encrypt
 
 ### Launch the Agent
 
@@ -223,11 +226,12 @@ Issues and PRs welcome → [GitHub Issues](https://github.com/Vasco0x4/AIDA/issu
 ---
 
 <p align="center">
-  Need help? <strong>vasco0x4</strong> on Discord
+  Questions or feedback? Join the community on <a href="https://discord.gg/RVJTWtkVA2"><strong>Discord</strong></a>
 </p>
 
 <p align="center">
   <a href="https://github.com/Vasco0x4/AIDA">⭐ Star on GitHub</a> •
+  <a href="https://discord.gg/RVJTWtkVA2">💬 Discord</a> •
   <a href="https://github.com/Vasco0x4/AIDA/issues">Report Bug</a> •
   <a href="mailto:Vasco0x4@proton.me">Contact</a>
 </p>

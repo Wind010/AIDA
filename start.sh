@@ -3,9 +3,16 @@
 # AIDA - Startup Script
 # ==============================================================================
 # Single entry point for all modes:
-#   ./start.sh            Production (Nginx on localhost:31337)
-#   ./start.sh --lan      Production + LAN accessible (0.0.0.0:31337)
-#   ./start.sh --dev      Development (Vite hot reload on localhost:5173)
+#   ./start.sh                     Local-only — http://localhost:31337  (no TLS)
+#   ./start.sh --lan               LAN-shared — https://<LAN_IP>        (Caddy + self-signed)
+#   ./start.sh --domain X.Y[ Z]    Public     — https://X.Y             (Caddy + Let's Encrypt)
+#   ./start.sh --dev               Dev mode   — http://localhost:5173   (Vite hot reload)
+#
+# Why TLS only in --lan / --domain:
+#   - Local-only traffic never leaves the machine → TLS adds zero security
+#     and a browser warning users have to click through. We skip it.
+#   - --lan exposes traffic over WiFi → encryption mandatory.
+#   - --domain serves over the internet → Let's Encrypt for a real cert.
 # ==============================================================================
 
 set -euo pipefail
@@ -29,31 +36,82 @@ cd "$SCRIPT_DIR"
 # PARSE ARGUMENTS
 # ==============================================================================
 
-MODE="prod"
-BIND="127.0.0.1"
+MODE="prod"          # prod | dev
+TLS_MODE=""          # "" (none) | lan | domain
+TLS_DOMAIN=""        # only when TLS_MODE=domain
+TLS_EMAIL=""         # optional, only used in domain mode (Let's Encrypt)
 SKIP_CHECKS=false
 
-for arg in "$@"; do
-    case $arg in
-        --dev|-d)     MODE="dev" ;;
-        --lan|-l)     BIND="0.0.0.0" ;;
-        --fast|-f)    SKIP_CHECKS=true ;;
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --dev|-d)     MODE="dev"; shift ;;
+        --lan|-l)     TLS_MODE="lan"; shift ;;
+        --domain)
+            TLS_MODE="domain"
+            TLS_DOMAIN="${2:-}"
+            if [[ -z "$TLS_DOMAIN" || "$TLS_DOMAIN" == --* ]]; then
+                echo "Error: --domain requires a value (e.g. --domain pentest.example.com)" >&2
+                exit 1
+            fi
+            shift 2
+            ;;
+        --domain=*)   TLS_MODE="domain"; TLS_DOMAIN="${1#*=}"; shift ;;
+        --email)
+            TLS_EMAIL="${2:-}"
+            if [[ -z "$TLS_EMAIL" || "$TLS_EMAIL" == --* ]]; then
+                echo "Error: --email requires a value" >&2
+                exit 1
+            fi
+            shift 2
+            ;;
+        --email=*)    TLS_EMAIL="${1#*=}"; shift ;;
+        --fast|-f)    SKIP_CHECKS=true; shift ;;
         --help|-h)
-            echo "Usage: ./start.sh [OPTIONS]"
-            echo ""
-            echo "Modes:"
-            echo "  (default)      Production — Nginx on localhost:31337"
-            echo "  --lan, -l      Production + LAN accessible (0.0.0.0:31337)"
-            echo "  --dev, -d      Development — Vite hot reload on localhost:5173"
-            echo "  --dev --lan    Development + LAN (hot reload accessible from network)"
-            echo ""
-            echo "Options:"
-            echo "  --fast, -f     Skip dependency checks (faster startup)"
-            echo "  --help, -h     Show this help"
+            cat <<EOF
+Usage: ./start.sh [OPTIONS]
+
+Modes (mutually exclusive — pick one):
+  (default)              Local-only — http://localhost:31337   (no TLS, simplest)
+  --lan, -l              LAN-shared — https://<LAN_IP>         (Caddy + self-signed)
+  --domain X.Y           Public     — https://X.Y              (Caddy + Let's Encrypt)
+  --dev, -d              Dev mode   — http://localhost:5173    (Vite hot reload)
+  --dev --lan            Dev + LAN  — Vite accessible from your network (HTTP only)
+
+Options:
+  --email EMAIL          Optional email for Let's Encrypt notifications (with --domain)
+  --fast, -f             Skip dependency checks (faster startup)
+  --help, -h             Show this help
+
+Examples:
+  ./start.sh
+  ./start.sh --lan
+  ./start.sh --domain aida.example.com --email admin@example.com
+EOF
             exit 0
+            ;;
+        *)
+            echo "Error: unknown argument: $1" >&2
+            echo "Run ./start.sh --help for usage." >&2
+            exit 1
             ;;
     esac
 done
+
+# --domain implies network exposure; reject combos that don't make sense
+if [[ -n "$TLS_MODE" && "$MODE" == "dev" ]]; then
+    # --lan + --dev is a legacy combo for Vite over LAN (no Caddy). Allow it.
+    if [[ "$TLS_MODE" != "lan" ]]; then
+        echo "Error: --domain is incompatible with --dev (TLS is for production only)" >&2
+        exit 1
+    fi
+fi
+
+# BIND drives FRONTEND_BIND_HOST / BACKEND_BIND_HOST in dev+LAN mode only.
+# In prod TLS modes, the host bind is handled via CADDY_BIND set later.
+BIND="127.0.0.1"
+if [[ "$MODE" == "dev" && "$TLS_MODE" == "lan" ]]; then
+    BIND="0.0.0.0"
+fi
 
 # ==============================================================================
 # MODE-SPECIFIC CONFIG
@@ -63,7 +121,6 @@ AIDA_PORT=31337
 
 if [[ "$MODE" == "dev" ]]; then
     COMPOSE_FILES=""
-    FRONTEND_PORT=5173
     FRONTEND_URL="http://localhost:5173"
     if [[ "$BIND" == "0.0.0.0" ]]; then
         MODE_LABEL="Development+LAN"
@@ -71,11 +128,30 @@ if [[ "$MODE" == "dev" ]]; then
         MODE_LABEL="Development"
     fi
 else
+    # Prod mode — always loads prod.yml (Nginx on 31337). TLS overlay is
+    # added below if --lan or --domain was passed.
     COMPOSE_FILES="-f docker-compose.yml -f docker-compose.prod.yml"
-    FRONTEND_PORT=$AIDA_PORT
-    FRONTEND_URL="http://localhost:${AIDA_PORT}"
-    MODE_LABEL="Production"
-    export FRONTEND_BIND="$BIND"
+
+    case "$TLS_MODE" in
+        lan)
+            COMPOSE_FILES="$COMPOSE_FILES -f docker-compose.tls.yml"
+            export CADDY_BIND="0.0.0.0"
+            FRONTEND_URL=""           # filled in once we detect the LAN IP
+            MODE_LABEL="LAN"
+            ;;
+        domain)
+            COMPOSE_FILES="$COMPOSE_FILES -f docker-compose.tls.yml"
+            export CADDY_BIND="0.0.0.0"
+            FRONTEND_URL="https://${TLS_DOMAIN}"
+            MODE_LABEL="Domain ($TLS_DOMAIN)"
+            ;;
+        *)
+            # Default local-only: Nginx exposed on 31337, no Caddy
+            export FRONTEND_BIND="127.0.0.1"
+            FRONTEND_URL="http://localhost:${AIDA_PORT}"
+            MODE_LABEL="Local"
+            ;;
+    esac
 fi
 
 section "AIDA - ${MODE_LABEL} Mode"
@@ -115,22 +191,44 @@ fi
 # TEAR DOWN OTHER MODE (if switching)
 # ==============================================================================
 
-# If we're starting prod and dev containers are running (or vice versa), stop them first.
+# If a different mode is currently running, tear it down first. We detect via
+# host port bindings:
+#   port 5173  → dev (Vite)
+#   port 31337 → prod local-only (Nginx exposed)
+#   port 443   → prod TLS (Caddy in front of internal Nginx)
+
+is_running_with_port() {
+    local port=$1
+    $COMPOSE_CMD -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.tls.yml \
+        ps --format "{{.Ports}}" 2>/dev/null | grep -q ":${port}"
+}
+
+teardown_other() {
+    local files=$1
+    local label=$2
+    warn "$label currently running — tearing down to switch modes..."
+    # shellcheck disable=SC2086
+    $COMPOSE_CMD $files down --timeout 15
+    log "$label stopped — data preserved"
+    sleep 1
+}
+
 if [[ "$MODE" == "dev" ]]; then
-    # Check if prod stack is running (port 31337 mapped)
-    if $COMPOSE_CMD -f docker-compose.yml -f docker-compose.prod.yml ps --format "{{.Ports}}" 2>/dev/null | grep -q "31337"; then
-        warn "Prod stack running — tearing down to switch to dev mode..."
-        $COMPOSE_CMD -f docker-compose.yml -f docker-compose.prod.yml down --timeout 15
-        log "Prod stack stopped — data preserved"
-        sleep 1
+    if is_running_with_port 31337; then
+        teardown_other "-f docker-compose.yml -f docker-compose.prod.yml" "Local prod stack"
+    elif is_running_with_port 443; then
+        teardown_other "-f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.tls.yml" "TLS prod stack"
     fi
 else
-    # Check if dev stack is running (port 5173 mapped)
-    if $COMPOSE_CMD ps --format "{{.Ports}}" 2>/dev/null | grep -q "5173"; then
-        warn "Dev stack running — tearing down to switch to prod mode..."
-        $COMPOSE_CMD down --timeout 15
-        log "Dev stack stopped — data preserved"
-        sleep 1
+    # Going to prod — stop dev if running
+    if is_running_with_port 5173; then
+        teardown_other "-f docker-compose.yml" "Dev stack"
+    fi
+    # Going to local prod — stop TLS prod if running, and vice versa
+    if [[ -z "$TLS_MODE" ]] && is_running_with_port 443; then
+        teardown_other "-f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.tls.yml" "TLS prod stack"
+    elif [[ -n "$TLS_MODE" ]] && is_running_with_port 31337 && ! is_running_with_port 443; then
+        teardown_other "-f docker-compose.yml -f docker-compose.prod.yml" "Local prod stack"
     fi
 fi
 
@@ -164,9 +262,17 @@ check_port() {
 }
 
 PORT_CONFLICT=false
-check_port 5432           "PostgreSQL" || PORT_CONFLICT=true
-check_port 8000           "Backend"    || PORT_CONFLICT=true
-check_port $FRONTEND_PORT "Frontend"   || PORT_CONFLICT=true
+check_port 5432 "PostgreSQL" || PORT_CONFLICT=true
+check_port 8000 "Backend"    || PORT_CONFLICT=true
+
+if [[ "$MODE" == "dev" ]]; then
+    check_port 5173 "Frontend (Vite)" || PORT_CONFLICT=true
+elif [[ -n "$TLS_MODE" ]]; then
+    check_port 443 "Caddy HTTPS" || PORT_CONFLICT=true
+    check_port 80  "Caddy HTTP"  || PORT_CONFLICT=true
+else
+    check_port 31337 "Frontend (Nginx)" || PORT_CONFLICT=true
+fi
 
 if [[ "$PORT_CONFLICT" == "true" ]]; then
     echo ""
@@ -193,15 +299,91 @@ if [[ ! -f "$CONTAINER_PREFS_FILE" ]]; then
 fi
 
 # ==============================================================================
+# CADDYFILE GENERATION (early — needs to exist before docker compose up)
+# Generated only for --lan / --domain. Idempotent: writing the same content
+# is a no-op. We compare hashes after to detect mode-switch (--lan ↔ --domain).
+# ==============================================================================
+
+CADDYFILE_HASH_BEFORE=""
+CADDYFILE_HASH_AFTER=""
+
+if [[ -n "$TLS_MODE" ]]; then
+    mkdir -p "$SCRIPT_DIR/.aida"
+    [[ -f "$SCRIPT_DIR/.aida/Caddyfile" ]] && CADDYFILE_HASH_BEFORE=$(shasum "$SCRIPT_DIR/.aida/Caddyfile" 2>/dev/null | awk '{print $1}')
+
+    if [[ "$TLS_MODE" == "domain" ]]; then
+        {
+            echo "{"
+            echo "    admin off"
+            [[ -n "$TLS_EMAIL" ]] && echo "    email $TLS_EMAIL"
+            echo "}"
+            echo ""
+            echo "$TLS_DOMAIN {"
+            echo "    reverse_proxy frontend:80 {"
+            echo "        header_up Host              {upstream_hostport}"
+            echo "        header_up X-Real-IP         {remote_host}"
+            echo "        header_up X-Forwarded-For   {remote_host}"
+            echo "        header_up X-Forwarded-Proto {scheme}"
+            echo "    }"
+            echo "}"
+        } > "$SCRIPT_DIR/.aida/Caddyfile"
+    else
+        cat > "$SCRIPT_DIR/.aida/Caddyfile" <<'EOF'
+{
+    admin off
+    auto_https off
+}
+
+:80 {
+    redir https://{host}{uri} 301
+}
+
+:443 {
+    tls {
+        on_demand
+        issuer internal
+    }
+
+    reverse_proxy frontend:80 {
+        header_up Host              {upstream_hostport}
+        header_up X-Real-IP         {remote_host}
+        header_up X-Forwarded-For   {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+    }
+}
+EOF
+    fi
+
+    CADDYFILE_HASH_AFTER=$(shasum "$SCRIPT_DIR/.aida/Caddyfile" 2>/dev/null | awk '{print $1}')
+fi
+
+# ==============================================================================
 # CHECK IF ALREADY RUNNING (same mode)
 # ==============================================================================
 
-CONTAINERS_RUNNING=$($COMPOSE ps --status running -q 2>/dev/null | wc -l | tr -d ' ')
+# Check the AIDA core containers by name (not just count — the user might
+# have unrelated containers up on the same host).
+running_names=$(docker ps --format "{{.Names}}" 2>/dev/null)
+core_up=true
+for name in aida_postgres aida_backend aida_frontend; do
+    echo "$running_names" | grep -q "^${name}$" || { core_up=false; break; }
+done
+# In TLS mode, Caddy must also be up
+if [[ -n "$TLS_MODE" ]] && ! echo "$running_names" | grep -q "^aida_caddy$"; then
+    core_up=false
+fi
 
-if [[ "$CONTAINERS_RUNNING" -ge 3 ]]; then
+if [[ "$core_up" == "true" ]]; then
+    # If TLS mode and the Caddyfile changed (e.g. --lan → --domain), reload Caddy.
+    if [[ -n "$TLS_MODE" && "$CADDYFILE_HASH_BEFORE" != "$CADDYFILE_HASH_AFTER" ]]; then
+        log "Caddyfile changed — reloading Caddy..."
+        $COMPOSE restart caddy >/dev/null 2>&1 || true
+    fi
+
     log "AIDA is already running! (${MODE_LABEL})"
     echo ""
-    $COMPOSE ps --format "table {{.Name}}\t{{.Status}}\t{{.Ports}}"
+    $COMPOSE ps --format "table {{.Name}}\t{{.Status}}\t{{.Ports}}" 2>/dev/null \
+        | grep -E "NAME|aida_(postgres|backend|frontend|caddy|docker_proxy)|aida-pentest" || true
     echo ""
     log "Frontend: $FRONTEND_URL"
     log "Backend:  http://localhost:8000"
@@ -266,43 +448,53 @@ fi
 # LAN MODE — detect IP and set CORS
 # ==============================================================================
 
-HOST_IP=""
-if [[ "$BIND" == "0.0.0.0" ]]; then
-    # macOS: try common interfaces
+detect_lan_ip() {
+    local ip=""
+    # macOS first (ipconfig is more reliable than hostname)
     if command -v ipconfig &>/dev/null; then
         for iface in en0 en1 en2 en3; do
-            candidate=$(ipconfig getifaddr "$iface" 2>/dev/null || true)
-            if [[ -n "$candidate" ]]; then
-                HOST_IP="$candidate"
-                break
-            fi
+            ip=$(ipconfig getifaddr "$iface" 2>/dev/null || true)
+            [[ -n "$ip" ]] && { echo "$ip"; return; }
         done
     fi
-    # Linux fallback
-    if [[ -z "$HOST_IP" ]] && command -v hostname &>/dev/null; then
-        HOST_IP=$(hostname -I 2>/dev/null | awk '{print $1}' || true)
+    # Linux
+    if command -v hostname &>/dev/null; then
+        ip=$(hostname -I 2>/dev/null | awk '{print $1}' || true)
+        [[ -n "$ip" ]] && { echo "$ip"; return; }
     fi
-    # Manual fallback
+}
+
+HOST_IP=""
+
+if [[ "$MODE" == "dev" && "$TLS_MODE" == "lan" ]]; then
+    # Dev + LAN — Vite over HTTP on the network (no Caddy)
+    HOST_IP=$(detect_lan_ip)
     if [[ -z "$HOST_IP" ]]; then
         warn "Could not auto-detect LAN IP."
         read -rp "Enter your machine's LAN IP (e.g. 192.168.1.10): " HOST_IP
     fi
-
     log "LAN IP: $HOST_IP"
+    export BACKEND_BIND_HOST="0.0.0.0"
+    export FRONTEND_BIND_HOST="0.0.0.0"
+    echo "VITE_API_URL=http://${HOST_IP}:8000/api" > frontend/.env
+    export BACKEND_CORS_ORIGINS="http://${HOST_IP}:5173,http://localhost:5173,http://127.0.0.1:5173"
+    FRONTEND_URL="http://${HOST_IP}:5173"
 
-    if [[ "$MODE" == "dev" ]]; then
-        # Dev + LAN: expose backend and Vite on the network
-        export BACKEND_BIND_HOST="0.0.0.0"
-        export FRONTEND_BIND_HOST="0.0.0.0"
-        # Write .env so Vite picks up the correct API URL (env file, not process env)
-        echo "VITE_API_URL=http://${HOST_IP}:8000/api" > frontend/.env
-        log "Updated frontend/.env for LAN (API → http://${HOST_IP}:8000/api)"
-        export BACKEND_CORS_ORIGINS="http://${HOST_IP}:5173,http://localhost:5173,http://127.0.0.1:5173"
-        FRONTEND_URL="http://${HOST_IP}:${FRONTEND_PORT}"
-    else
-        export BACKEND_CORS_ORIGINS="http://${HOST_IP}:${AIDA_PORT},http://localhost:${AIDA_PORT},http://127.0.0.1:${AIDA_PORT}"
-        FRONTEND_URL="http://${HOST_IP}:${AIDA_PORT}"
+elif [[ "$TLS_MODE" == "lan" ]]; then
+    # Prod LAN — Caddy on 443 with self-signed
+    HOST_IP=$(detect_lan_ip)
+    if [[ -z "$HOST_IP" ]]; then
+        warn "Could not auto-detect LAN IP."
+        read -rp "Enter your machine's LAN IP (e.g. 192.168.1.10): " HOST_IP
     fi
+    log "LAN IP: $HOST_IP"
+    export BACKEND_CORS_ORIGINS="https://${HOST_IP},https://localhost,https://127.0.0.1"
+    FRONTEND_URL="https://${HOST_IP}"
+
+elif [[ "$TLS_MODE" == "domain" ]]; then
+    # Prod domain — Caddy on 443 with Let's Encrypt
+    export BACKEND_CORS_ORIGINS="https://${TLS_DOMAIN}"
+    FRONTEND_URL="https://${TLS_DOMAIN}"
 fi
 
 # ==============================================================================
@@ -326,8 +518,10 @@ if [[ -n "$ORPHAN_POSTGRES" || -n "$ORPHAN_BACKEND" || -n "$ORPHAN_FRONTEND" ]] 
 fi
 
 # Dev mode: always build from source (hot reload needs local code)
-# Prod mode: pull pre-built images from Docker Hub (instant start)
-#            fall back to local build if pull fails (Hub not set up yet)
+# Prod mode: pull backend from Hub (instant start); always build the frontend
+#            locally because Dockerfile.prod bakes VITE_API_URL=/api at
+#            compile time — the Hub image (built from the base Dockerfile)
+#            runs the Vite dev server, not Nginx.
 if [[ "$MODE" == "dev" ]]; then
     log "Building Docker images from source..."
     if [[ "$CONTAINER_MODE" == "aida-pentest" ]]; then
@@ -336,26 +530,31 @@ if [[ "$MODE" == "dev" ]]; then
         $COMPOSE build --quiet backend frontend
     fi
 else
-    log "Pulling Docker images..."
-    if $COMPOSE pull --quiet 2>/dev/null; then
-        log "Images pulled from Docker Hub"
+    log "Pulling backend image..."
+    if $COMPOSE pull --quiet backend 2>/dev/null; then
+        log "Backend image pulled from Docker Hub"
     else
-        warn "Pull failed — building from source (first run may take a few minutes)..."
-        if [[ "$CONTAINER_MODE" == "aida-pentest" ]]; then
-            $COMPOSE build --quiet
-        else
-            $COMPOSE build --quiet backend frontend
-        fi
+        warn "Backend pull failed — building from source..."
+        $COMPOSE build --quiet backend
     fi
+    # Frontend must always be built locally: Dockerfile.prod bakes VITE_API_URL=/api
+    log "Building frontend (Nginx) from source..."
+    $COMPOSE build --quiet frontend
 fi
 
 # ==============================================================================
 # START CONTAINERS
 # ==============================================================================
 
-RUNNING_CONTAINERS=$($COMPOSE ps --status running -q 2>/dev/null | wc -l | tr -d ' ')
+# Check core containers again (after teardown). 'docker compose up -d' is
+# idempotent, so this is mostly to skip a redundant log line.
+running_names=$(docker ps --format "{{.Names}}" 2>/dev/null)
+core_up=true
+for name in aida_postgres aida_backend aida_frontend; do
+    echo "$running_names" | grep -q "^${name}$" || { core_up=false; break; }
+done
 
-if [[ "$RUNNING_CONTAINERS" -ge 3 ]]; then
+if [[ "$core_up" == "true" ]]; then
     log "Containers already running"
 else
     log "Starting containers..."
@@ -364,9 +563,15 @@ else
         ENVIRONMENT=development $COMPOSE up -d --remove-orphans 2>&1 | grep -v "already exists but was created for project" || true
     else
         if [[ "$CONTAINER_MODE" == "aida-pentest" ]]; then
+            # Bring up everything in the merged compose (postgres, backend, frontend,
+            # docker-proxy, aida-pentest, and caddy if TLS overlay is loaded).
             $COMPOSE up -d --remove-orphans 2>&1 | grep -v "already exists but was created for project" || true
         else
-            $COMPOSE up -d --remove-orphans postgres backend frontend 2>&1 | grep -v "already exists but was created for project" || true
+            # Exegol mode — explicit service list (skip aida-pentest, the user runs Exegol externally).
+            # Append "caddy" when the TLS overlay is loaded so it's not omitted.
+            local_services=(postgres backend frontend)
+            [[ -n "$TLS_MODE" ]] && local_services+=(caddy)
+            $COMPOSE up -d --remove-orphans "${local_services[@]}" 2>&1 | grep -v "already exists but was created for project" || true
         fi
     fi
 fi
@@ -395,13 +600,18 @@ wait_for_service() {
     echo -e "${GREEN}Ready${NC}"
 }
 
-wait_for_service "PostgreSQL" "$COMPOSE exec -T postgres pg_isready -U aida" 30
-wait_for_service "Backend"    "curl -sf http://localhost:8000/health"         60
+wait_for_service "PostgreSQL" "$COMPOSE exec -T postgres pg_isready -U aida" 30 || { error "PostgreSQL did not become ready. Check: $COMPOSE logs postgres"; exit 1; }
+wait_for_service "Backend"    "curl -sf http://localhost:8000/health"         60 || { error "Backend did not become ready. Check: $COMPOSE logs backend"; exit 1; }
 
 if [[ "$MODE" == "dev" ]]; then
-    wait_for_service "Frontend" "curl -sf http://localhost:5173" 120
+    wait_for_service "Frontend" "curl -sf http://localhost:5173" 120 || { error "Frontend (Vite) did not start. Check: $COMPOSE logs frontend"; exit 1; }
+elif [[ "$TLS_MODE" == "domain" ]]; then
+    # Let's Encrypt issuance can take 30-60s on first request
+    wait_for_service "Caddy" "curl -sfk https://localhost" 180 || { error "Caddy (TLS) did not start. Check: $COMPOSE logs caddy"; exit 1; }
+elif [[ "$TLS_MODE" == "lan" ]]; then
+    wait_for_service "Caddy" "curl -sfk https://localhost" 90 || { error "Caddy (LAN) did not start. Check: $COMPOSE logs caddy"; exit 1; }
 else
-    wait_for_service "Frontend" "curl -sf http://localhost:${AIDA_PORT}" 90
+    wait_for_service "Frontend" "curl -sf http://localhost:${AIDA_PORT}" 90 || { error "Frontend (Nginx) did not start. Check: $COMPOSE logs frontend"; exit 1; }
 fi
 
 # ==============================================================================
@@ -437,17 +647,23 @@ fi
 # SUCCESS
 # ==============================================================================
 
-section "AIDA Ready"
+section "AIDA Ready (${MODE_LABEL})"
 
 echo ""
 log "Frontend : $FRONTEND_URL"
 log "Backend  : http://localhost:8000"
 log "API Docs : http://localhost:8000/docs"
 
-if [[ "$BIND" == "0.0.0.0" && -n "$HOST_IP" ]]; then
-    echo ""
-    echo -e "  ${BLUE}Share with your team →${NC}  $FRONTEND_URL"
-fi
+case "$TLS_MODE" in
+    lan)
+        log "TLS      : self-signed (browser warning expected)"
+        echo ""
+        echo -e "  ${BLUE}Share with your team →${NC}  $FRONTEND_URL"
+        ;;
+    domain)
+        log "TLS      : Let's Encrypt"
+        ;;
+esac
 
 echo ""
 $COMPOSE ps --format "table {{.Name}}\t{{.Status}}"

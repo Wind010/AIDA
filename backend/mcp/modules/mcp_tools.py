@@ -121,29 +121,6 @@ def get_tool_definitions() -> List[Tool]:
                 }
             }
         ),
-        Tool(
-            name="update_phase",
-            description="Update content of a phase section (free text, markdown supported)",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "phase_number": {
-                        "type": "number",
-                        "description": "Phase number (1.0, 2.0, 3.0, etc.)"
-                    },
-                    "title": {
-                        "type": "string",
-                        "description": "Section title"
-                    },
-                    "content": {
-                        "type": "string",
-                        "description": "Phase content (markdown supported)"
-                    }
-                },
-                "required": ["phase_number", "content"]
-            }
-        ),
-
         # ========== Cards Management (4 unified tools) ==========
         Tool(
             name="add_card",

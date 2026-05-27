@@ -33,9 +33,29 @@ fi
 
 section "AIDA - Restarting Services"
 
+# Detect active mode. Stopped containers don't expose .Ports, so we use
+# container names + inspect for port bindings instead.
+#   aida_caddy exists  → TLS prod
+#   aida_frontend has 31337 binding → local prod
+#   otherwise → dev
+ALL_NAMES=$(docker ps -a --format "{{.Names}}" 2>/dev/null || true)
+
+if echo "$ALL_NAMES" | grep -q "^aida_caddy$"; then
+    COMPOSE_FILES="-f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.tls.yml"
+    MODE_LABEL="TLS prod"
+elif echo "$ALL_NAMES" | grep -q "^aida_frontend$" \
+     && docker inspect aida_frontend --format '{{json .HostConfig.PortBindings}}' 2>/dev/null | grep -q "31337"; then
+    COMPOSE_FILES="-f docker-compose.yml -f docker-compose.prod.yml"
+    MODE_LABEL="Local prod"
+else
+    COMPOSE_FILES=""
+    MODE_LABEL="Dev"
+fi
+COMPOSE="$COMPOSE_CMD $COMPOSE_FILES"
+
 # Check if containers exist at all
-RUNNING=$($COMPOSE_CMD ps --status running -q 2>/dev/null | wc -l | tr -d ' ')
-STOPPED=$($COMPOSE_CMD ps --status exited -q 2>/dev/null | wc -l | tr -d ' ')
+RUNNING=$($COMPOSE ps --status running -q 2>/dev/null | wc -l | tr -d ' ')
+STOPPED=$($COMPOSE ps --status exited -q 2>/dev/null | wc -l | tr -d ' ')
 TOTAL=$((RUNNING + STOPPED))
 
 if [[ "$TOTAL" -eq 0 ]]; then
@@ -54,8 +74,8 @@ if [[ -f "$SCRIPT_DIR/tools/helper.py" ]]; then
 fi
 
 # Restart containers
-log "Restarting containers..."
-$COMPOSE_CMD restart
+log "Restarting containers (${MODE_LABEL})..."
+$COMPOSE restart
 
 # Wait for services
 section "Waiting for Services"
@@ -78,24 +98,30 @@ wait_for_service() {
     echo -e "${GREEN}Ready${NC}"
 }
 
-wait_for_service "PostgreSQL" "$COMPOSE_CMD exec -T postgres pg_isready -U aida" 30
-wait_for_service "Backend"    "curl -sf http://localhost:8000/health"              60
+wait_for_service "PostgreSQL" "$COMPOSE exec -T postgres pg_isready -U aida" 30
+wait_for_service "Backend"    "curl -sf http://localhost:8000/health"          60
 
-# Frontend check: port 31337 (prod/Nginx) or 5173 (dev/Vite)
-if curl -sf http://localhost:31337 &>/dev/null 2>&1 || \
-   $COMPOSE_CMD ps --format "{{.Ports}}" 2>/dev/null | grep -q "31337"; then
-    FRONTEND_URL="http://localhost:31337"
-    wait_for_service "Frontend" "curl -sf http://localhost:31337" 60
-else
-    FRONTEND_URL="http://localhost:5173"
-    wait_for_service "Frontend" "curl -sf http://localhost:5173"  120
-fi
+# Frontend check: depends on the mode detected above
+case "$MODE_LABEL" in
+    "TLS prod")
+        FRONTEND_URL="https://localhost"
+        wait_for_service "Caddy" "curl -sfk https://localhost" 60
+        ;;
+    "Local prod")
+        FRONTEND_URL="http://localhost:31337"
+        wait_for_service "Frontend" "curl -sf http://localhost:31337" 60
+        ;;
+    *)
+        FRONTEND_URL="http://localhost:5173"
+        wait_for_service "Frontend" "curl -sf http://localhost:5173" 120
+        ;;
+esac
 
 # Success
 section "AIDA Restarted"
 
 echo ""
-$COMPOSE_CMD ps --format "table {{.Name}}\t{{.Status}}"
+$COMPOSE ps --format "table {{.Name}}\t{{.Status}}"
 echo ""
 log "Frontend : $FRONTEND_URL"
 log "Backend  : http://localhost:8000"

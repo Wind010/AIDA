@@ -1,17 +1,24 @@
 """
-Report generation service - produces PDF pentest reports from assessment data
+Report generation service - produces PDF pentest reports from assessment data.
+
+The HTML/CSS templates live alongside this file under ``report_templates/``.
 """
 import io
 import base64
-import os
+import re
+import shlex
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
-from jinja2 import Template
+import markdown as md_lib
+from jinja2 import Environment, FileSystemLoader, select_autoescape
 from weasyprint import HTML
 from sqlalchemy.orm import Session
 
-from models import Assessment, Card, ReconData, AssessmentSection, CommandHistory, Credential
+from config import settings
+from models import Assessment, Card, ReconData, CommandHistory, Credential
+from services.container_service import ContainerService
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -31,6 +38,183 @@ SEVERITY_BG = {
     "LOW": "rgba(59,130,246,0.08)",
     "INFO": "rgba(100,116,139,0.08)",
 }
+
+_TEMPLATES_DIR = Path(__file__).resolve().parent / "report_templates"
+_jinja_env = Environment(
+    loader=FileSystemLoader(str(_TEMPLATES_DIR)),
+    autoescape=select_autoescape(["html", "j2"]),
+)
+
+
+# ---------------------------------------------------------------------------
+# Markdown sanity preprocessor
+# ---------------------------------------------------------------------------
+#
+# The AI often writes proof-of-concept fields like::
+#
+#     # Current state - disabled:
+#     curl -s -u admin:admin http://target/api ...
+#     → HTTP 403
+#
+# Markdown parses ``# Current state`` as an H1, blowing the layout. The same
+# problem happens when commands are dumped without ``` fences. Before
+# handing the text to the markdown library we wrap each block of consecutive
+# lines that look like shell/HTTP content in a fenced code block. We only
+# do this when the input has no fences yet, so already-well-formatted
+# content is left untouched.
+#
+# Detection rules — designed to avoid wrapping prose that happens to start
+# with an HTTP verb like ``POST /foo is unsafe because…``:
+#
+#   * HTTP verbs are only counted when followed by a clear path/URL marker
+#     (``/``, ``http://``, ``HTTP/``) — never when followed by prose.
+#   * Shell comments (``# foo``) only count when short, since real prose
+#     rarely starts with ``# `` but markdown headings can be long.
+#   * Strong CLI signals (``curl ...``, ``$ cmd``, ``→ output``) are
+#     counted unconditionally.
+#   * A paragraph is wrapped only when ≥2 lines match, or when the lone
+#     line is a strong CLI signal — this keeps single-sentence prose
+#     starting with "curl" or "POST" out of the code-wrap path.
+_STRONG_CMD_RE = re.compile(
+    r"^\s*(?:"
+    r"\$\s|>\s|→\s|⇒\s|->\s|=>\s|"
+    r"curl|wget|nmap|ssh|sshpass|sqlmap|ffuf|nikto|gobuster|hydra|nc\s|ncat|"
+    r"masscan|amass|subfinder|whatweb|httpx|nuclei|dirb|dirbuster|"
+    r"docker\s|kubectl|aws\s|gcloud|az\s|terraform\s|"
+    r"python\d*\s|pip\d*\s|npm\s|node\s|ruby\s|perl\s|php\s|bash\s|sh\s|zsh\s"
+    r")",
+    re.IGNORECASE,
+)
+# HTTP verbs ONLY when followed by a path/URL — avoids wrapping prose that
+# happens to start with a verb (e.g. "POST data is sent to the server").
+_HTTP_REQ_RE = re.compile(
+    r"^\s*(?:GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS|TRACE|CONNECT)\s+"
+    r"(?:/|https?://|HTTP/)",
+)
+# Shell-style comment lines: must be short, lowercase-ish, not a markdown
+# heading (e.g. "## Something" should still render as h2).
+_SHELL_COMMENT_RE = re.compile(r"^\s*#\s+\S")
+
+
+def _classify_line(line: str) -> str:
+    """Classify a line as ``strong``, ``weak``, or ``prose``.
+
+    - ``strong``: clear CLI invocation (``curl …``, ``$ cmd``, ``→ output``).
+      A single strong line on its own is enough to trigger code wrapping.
+    - ``weak``: HTTP verb + path, or short ``# comment`` — these match common
+      code patterns but also appear at the start of prose sentences
+      (e.g. *"POST /api/foo accepts a `cmd` parameter…"*), so we only treat
+      them as code when they appear in a multi-line code block.
+    - ``prose``: anything else.
+    """
+    s = line.strip()
+    if not s:
+        return "prose"
+    if _STRONG_CMD_RE.match(line):
+        return "strong"
+    if _HTTP_REQ_RE.match(line):
+        return "weak"
+    if _SHELL_COMMENT_RE.match(line) and len(s) <= 120 and not s.startswith("##"):
+        return "weak"
+    return "prose"
+
+
+def _wrap_unfenced_code(text: str) -> str:
+    """Wrap blocks of consecutive code-like lines in fenced code blocks.
+
+    A paragraph (block of consecutive non-empty lines) is wrapped when:
+
+      * it contains ≥2 code-like lines (any classification), or
+      * it is a single line that is a *strong* CLI signal pasted alone.
+
+    Weak signals (HTTP verb + path, ``# comment``) alone on a line are
+    left untouched — they're too easy to confuse with prose.
+    """
+    if not text or "```" in text:
+        return text
+
+    # Group lines into paragraphs separated by blank lines.
+    paragraphs: list = []  # list of (kind, lines)
+    current: list[str] = []
+    for raw in text.split("\n"):
+        if raw.strip():
+            current.append(raw)
+        else:
+            if current:
+                paragraphs.append(("p", current))
+                current = []
+            paragraphs.append(("blank", [raw]))
+    if current:
+        paragraphs.append(("p", current))
+
+    out: list[str] = []
+    for kind, lines in paragraphs:
+        if kind == "blank":
+            out.extend(lines)
+            continue
+        classes = [_classify_line(l) for l in lines]
+        code_count = sum(1 for c in classes if c != "prose")
+        strong_count = sum(1 for c in classes if c == "strong")
+        # Wrap when several lines match (multi-line code block), OR when a
+        # single short line is a strong CLI signal.
+        should_wrap = code_count >= 2 or (
+            len(lines) == 1
+            and strong_count == 1
+            and len(lines[0]) <= 250
+        )
+        if should_wrap:
+            out.append("```")
+            out.extend(lines)
+            out.append("```")
+        else:
+            out.extend(lines)
+    return "\n".join(out)
+
+
+def _render_markdown(text: str) -> str:
+    """Render a markdown string to HTML.
+
+    Used as a Jinja filter (``| markdown``) so that finding fields written
+    by the AI (technical_analysis, proof, notes) — which routinely contain
+    fenced code, bold, lists, inline code — render the same way the
+    methodology section does instead of dumping raw asterisks and backticks.
+    Unfenced shell/HTTP blocks are auto-wrapped first so they don't end up
+    interpreted as H1 headings.
+    """
+    if not text:
+        return ""
+    cleaned = _wrap_unfenced_code(text)
+    return md_lib.markdown(
+        cleaned,
+        extensions=["fenced_code", "tables", "sane_lists"],
+        output_format="html5",
+    )
+
+
+_jinja_env.filters["markdown"] = _render_markdown
+
+
+def _format_recon_details(value) -> str:
+    """Render a recon ``details`` JSON value as a readable inline string.
+
+    Recon rows persist their details as ``JSONB`` — usually a flat dict of
+    metadata like ``{'port': 80, 'service': 'nginx'}``. Printing that as
+    raw Python repr produces an ugly, brace-heavy cell. This filter turns
+    the dict into ``port: 80 · service: nginx`` for compact, human-friendly
+    display. Lists collapse to comma-joined strings; primitives are stringified.
+    """
+    if value is None or value == "":
+        return "—"
+    if isinstance(value, dict):
+        if not value:
+            return "—"
+        return " · ".join(f"{k}: {v}" for k, v in value.items())
+    if isinstance(value, list):
+        return ", ".join(str(x) for x in value) if value else "—"
+    return str(value)
+
+
+_jinja_env.filters["recon_details"] = _format_recon_details
 
 
 def _load_logo_b64() -> str:
@@ -54,8 +238,75 @@ def _compute_risk_score(findings: list) -> str:
     return {0: "CRITICAL", 1: "HIGH", 2: "MEDIUM", 3: "LOW"}.get(worst, "INFORMATIONAL")
 
 
-def generate_pdf_report(db: Session, assessment_id: int) -> io.BytesIO:
-    """Generate a PDF pentest report for the given assessment."""
+def _is_methodology_placeholder(content: str) -> bool:
+    """Return True when methodology.md still contains the default template.
+
+    Mirrors the logic in frontend MethodologyReport.jsx so the PDF and UI
+    treat the file the same way.
+    """
+    stripped = content.strip()
+    if not stripped:
+        return True
+    non_empty_lines = [l for l in stripped.split("\n") if l.strip()]
+    if "Generated by AIDA AI" in stripped and len(non_empty_lines) <= 4:
+        return True
+    return False
+
+
+async def _load_methodology_html(assessment: Assessment) -> Optional[str]:
+    """Fetch methodology.md from the assessment workspace and render to HTML.
+
+    Returns None when the file is missing, unreadable, or still holds the
+    default template placeholder — the report then omits the section entirely.
+    """
+    if not assessment.workspace_path:
+        return None
+
+    container_name = assessment.container_name or settings.DEFAULT_CONTAINER_NAME
+
+    container_service = ContainerService()
+    container_service.current_container = container_name
+
+    full_path = f"{assessment.workspace_path}/methodology.md"
+    check_cmd = f"test -f {shlex.quote(full_path)} && echo exists"
+    check = await container_service.execute_container_command(check_cmd)
+    if not check.get("success") or "exists" not in (check.get("stdout") or ""):
+        return None
+
+    read = await container_service.execute_container_command(f"cat {shlex.quote(full_path)}")
+    if not read.get("success"):
+        logger.warning(
+            "Failed to read methodology.md for report",
+            assessment_id=assessment.id,
+            stderr=(read.get("stderr") or "")[:200],
+        )
+        return None
+
+    content = read.get("stdout") or ""
+    if _is_methodology_placeholder(content):
+        return None
+
+    html = md_lib.markdown(
+        content,
+        extensions=["fenced_code", "tables", "nl2br", "sane_lists", "toc"],
+        output_format="html5",
+    )
+    return html
+
+
+async def generate_pdf_report(
+    db: Session,
+    assessment_id: int,
+    include_secrets: bool = False,
+) -> io.BytesIO:
+    """Generate a PDF pentest report for the given assessment.
+
+    Args:
+        include_secrets: If False (default), credential secrets (password,
+            token, cookie value, custom JSON) are masked in the report so the
+            PDF can be safely shared. When True, the raw values are embedded
+            — only do this for the pentester's internal copy.
+    """
 
     # --- Fetch data ---
     assessment = db.query(Assessment).filter(Assessment.id == assessment_id).first()
@@ -73,13 +324,6 @@ def generate_pdf_report(db: Session, assessment_id: int) -> io.BytesIO:
     )
     observations = [c for c in cards if c.card_type == "observation"]
     info_cards = [c for c in cards if c.card_type == "info"]
-
-    sections = (
-        db.query(AssessmentSection)
-        .filter(AssessmentSection.assessment_id == assessment_id)
-        .order_by(AssessmentSection.section_number)
-        .all()
-    )
 
     recon = (
         db.query(ReconData)
@@ -104,22 +348,26 @@ def generate_pdf_report(db: Session, assessment_id: int) -> io.BytesIO:
     for f in findings:
         sev = f.severity or "INFO"
         severity_counts[sev] = severity_counts.get(sev, 0) + 1
-
     max_sev_count = max(severity_counts.values()) if severity_counts else 1
 
     # --- Risk score ---
     risk_score = _compute_risk_score(findings)
 
+    # --- Methodology (rendered markdown) ---
+    methodology_html = await _load_methodology_html(assessment)
+
     # --- Logo ---
     logo_b64 = _load_logo_b64()
 
     # --- Render HTML ---
-    html_content = REPORT_TEMPLATE.render(
+    css = (_TEMPLATES_DIR / "report.css").read_text(encoding="utf-8")
+    template = _jinja_env.get_template("report.html.j2")
+    html_content = template.render(
+        css=css,
         assessment=assessment,
         findings=findings,
         observations=observations,
         info_cards=info_cards,
-        sections=sections,
         recon=recon,
         credentials=credentials,
         commands_count=commands_count,
@@ -135,6 +383,8 @@ def generate_pdf_report(db: Session, assessment_id: int) -> io.BytesIO:
         max_sev_count=max_sev_count,
         risk_score=risk_score,
         logo_b64=logo_b64,
+        methodology_html=methodology_html,
+        include_secrets=include_secrets,
     )
 
     # --- Generate PDF ---
@@ -147,904 +397,8 @@ def generate_pdf_report(db: Session, assessment_id: int) -> io.BytesIO:
         assessment_id=assessment_id,
         findings=len(findings),
         observations=len(observations),
+        methodology_included=methodology_html is not None,
+        include_secrets=include_secrets,
     )
 
     return pdf_buffer
-
-
-# ---------------------------------------------------------------------------
-# Jinja2 HTML template — professional AIDA pentest report
-# ---------------------------------------------------------------------------
-
-REPORT_TEMPLATE = Template('''\
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<style>
-  /* ================================================================
-     PAGE & BASE
-     ================================================================ */
-  @page {
-    size: A4;
-    margin: 1.8cm 2cm 2.2cm 2cm;
-    @bottom-left {
-      content: "CONFIDENTIAL — AIDA Security Report";
-      font-size: 7pt;
-      color: #94a3b8;
-      font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
-    }
-    @bottom-right {
-      content: "Page " counter(page) " / " counter(pages);
-      font-size: 7pt;
-      color: #94a3b8;
-      font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
-    }
-  }
-  @page :first {
-    margin: 0;
-    @bottom-left  { content: none; }
-    @bottom-right { content: none; }
-  }
-
-  :root {
-    --primary: #6366f1;
-    --primary-dark: #4338ca;
-    --bg-dark: #0f172a;
-    --bg-card: #ffffff;
-    --border: #e2e8f0;
-    --text: #1e293b;
-    --text-light: #64748b;
-    --text-muted: #94a3b8;
-    --accent-critical: #e11d48;
-    --accent-high: #f43f5e;
-    --accent-medium: #f59e0b;
-    --accent-low: #3b82f6;
-    --accent-info: #64748b;
-  }
-
-  * { box-sizing: border-box; }
-
-  body {
-    font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
-    font-size: 9.5pt;
-    line-height: 1.6;
-    color: var(--text);
-    margin: 0;
-    padding: 0;
-  }
-
-  /* ================================================================
-     COVER PAGE — dark gradient
-     ================================================================ */
-  .cover {
-    page-break-after: always;
-    width: 210mm;
-    height: 297mm;
-    background: linear-gradient(160deg, #0f172a 0%, #1e1b4b 40%, #312e81 100%);
-    color: #ffffff;
-    padding: 0;
-    position: relative;
-    overflow: hidden;
-  }
-
-  /* decorative circles */
-  .cover::before {
-    content: "";
-    position: absolute;
-    width: 500px;
-    height: 500px;
-    border-radius: 50%;
-    background: radial-gradient(circle, rgba(99,102,241,0.15) 0%, transparent 70%);
-    top: -120px;
-    right: -120px;
-  }
-  .cover::after {
-    content: "";
-    position: absolute;
-    width: 350px;
-    height: 350px;
-    border-radius: 50%;
-    background: radial-gradient(circle, rgba(139,92,246,0.12) 0%, transparent 70%);
-    bottom: 60px;
-    left: -80px;
-  }
-
-  .cover-inner {
-    position: relative;
-    z-index: 1;
-    padding: 80px 60px 60px 60px;
-    height: 100%;
-  }
-
-  .cover-logo {
-    width: 90px;
-    height: auto;
-    margin-bottom: 16px;
-    opacity: 0.95;
-  }
-
-  .cover-brand {
-    font-size: 13pt;
-    font-weight: 600;
-    letter-spacing: 4px;
-    text-transform: uppercase;
-    color: #a5b4fc;
-    margin-bottom: 60px;
-  }
-
-  .cover-line {
-    width: 60px;
-    height: 3px;
-    background: linear-gradient(90deg, #6366f1, #a78bfa);
-    border: none;
-    margin: 0 0 30px 0;
-    border-radius: 2px;
-  }
-
-  .cover h1 {
-    font-size: 32pt;
-    font-weight: 700;
-    line-height: 1.15;
-    margin: 0 0 12px 0;
-    color: #ffffff;
-  }
-
-  .cover .cover-subtitle {
-    font-size: 15pt;
-    font-weight: 400;
-    color: #c7d2fe;
-    margin-bottom: 50px;
-  }
-
-  .cover-meta-grid {
-    margin-top: auto;
-    position: absolute;
-    bottom: 80px;
-    left: 60px;
-    right: 60px;
-  }
-
-  .cover-meta-row {
-    padding: 10px 0;
-    border-top: 1px solid rgba(255,255,255,0.1);
-  }
-  .cover-meta-row:last-child {
-    border-bottom: 1px solid rgba(255,255,255,0.1);
-  }
-
-  .cover-meta-label {
-    display: inline-block;
-    width: 120px;
-    font-size: 8pt;
-    text-transform: uppercase;
-    letter-spacing: 1.5px;
-    color: #a5b4fc;
-  }
-  .cover-meta-value {
-    font-size: 10pt;
-    color: #e2e8f0;
-  }
-
-  .cover-footer {
-    position: absolute;
-    bottom: 25px;
-    left: 60px;
-    right: 60px;
-    text-align: center;
-    font-size: 7.5pt;
-    color: rgba(255,255,255,0.3);
-    letter-spacing: 0.5px;
-  }
-
-  /* ================================================================
-     TABLE OF CONTENTS
-     ================================================================ */
-  .toc {
-    page-break-after: always;
-    padding-top: 20px;
-  }
-  .toc h2 {
-    font-size: 18pt;
-    color: var(--primary-dark);
-    border: none;
-    margin-bottom: 30px;
-    padding-bottom: 0;
-  }
-  .toc-item {
-    padding: 8px 0;
-    border-bottom: 1px dotted #cbd5e1;
-    font-size: 10pt;
-  }
-  .toc-item a {
-    color: var(--text);
-    text-decoration: none;
-  }
-  .toc-num {
-    display: inline-block;
-    width: 30px;
-    font-weight: 700;
-    color: var(--primary);
-  }
-
-  /* ================================================================
-     SECTION HEADINGS
-     ================================================================ */
-  h2 {
-    font-size: 16pt;
-    font-weight: 700;
-    color: var(--bg-dark);
-    margin-top: 35px;
-    margin-bottom: 6px;
-    padding-bottom: 8px;
-    border-bottom: 3px solid var(--primary);
-    letter-spacing: -0.3px;
-  }
-  h2 .section-num {
-    color: var(--primary);
-    margin-right: 6px;
-  }
-  h3 {
-    font-size: 11.5pt;
-    font-weight: 600;
-    margin-top: 22px;
-    margin-bottom: 4px;
-    color: #334155;
-  }
-
-  /* ================================================================
-     RISK BANNER
-     ================================================================ */
-  .risk-banner {
-    border-radius: 10px;
-    padding: 20px 24px;
-    margin: 20px 0 28px 0;
-    color: #fff;
-    text-align: center;
-  }
-  .risk-banner .risk-label {
-    font-size: 8pt;
-    text-transform: uppercase;
-    letter-spacing: 2px;
-    opacity: 0.85;
-    margin-bottom: 4px;
-  }
-  .risk-banner .risk-level {
-    font-size: 22pt;
-    font-weight: 800;
-    letter-spacing: 1px;
-  }
-
-  /* ================================================================
-     STATS CARDS
-     ================================================================ */
-  .stats-row {
-    width: 100%;
-    margin: 16px 0 24px 0;
-    border-collapse: separate;
-    border-spacing: 8px 0;
-  }
-  .stat-card {
-    background: #f8fafc;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 14px 10px;
-    text-align: center;
-    width: 25%;
-  }
-  .stat-num {
-    font-size: 24pt;
-    font-weight: 800;
-    line-height: 1.1;
-  }
-  .stat-label {
-    font-size: 7.5pt;
-    text-transform: uppercase;
-    letter-spacing: 1.2px;
-    color: var(--text-light);
-    margin-top: 2px;
-  }
-
-  /* ================================================================
-     SEVERITY BAR CHART
-     ================================================================ */
-  .sev-chart {
-    margin: 16px 0 20px 0;
-    width: 100%;
-  }
-  .sev-chart-row {
-    margin-bottom: 8px;
-  }
-  .sev-chart-label {
-    display: inline-block;
-    width: 70px;
-    font-size: 8pt;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-    vertical-align: middle;
-  }
-  .sev-chart-bar-bg {
-    display: inline-block;
-    width: calc(100% - 110px);
-    height: 22px;
-    background: #f1f5f9;
-    border-radius: 4px;
-    vertical-align: middle;
-    overflow: hidden;
-  }
-  .sev-chart-bar {
-    height: 100%;
-    border-radius: 4px;
-    min-width: 2px;
-  }
-  .sev-chart-count {
-    display: inline-block;
-    width: 30px;
-    text-align: right;
-    font-size: 9pt;
-    font-weight: 700;
-    vertical-align: middle;
-    color: var(--text);
-  }
-
-  /* ================================================================
-     FINDING CARDS
-     ================================================================ */
-  .finding {
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    margin-bottom: 18px;
-    page-break-inside: avoid;
-    overflow: hidden;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.04);
-  }
-  .finding-header {
-    padding: 12px 18px;
-    color: #fff;
-    font-weight: 700;
-    font-size: 10.5pt;
-    letter-spacing: -0.2px;
-  }
-  .finding-header .finding-id {
-    opacity: 0.7;
-    font-weight: 400;
-    font-size: 8.5pt;
-    margin-left: 8px;
-  }
-  .finding-body {
-    padding: 16px 18px;
-    background: #fff;
-  }
-  .finding-meta {
-    font-size: 8.5pt;
-    color: var(--text-light);
-    margin-bottom: 12px;
-    padding-bottom: 10px;
-    border-bottom: 1px solid #f1f5f9;
-  }
-  .finding-meta span {
-    margin-right: 18px;
-  }
-  .finding-meta strong {
-    color: var(--text);
-  }
-
-  .finding-field {
-    margin-top: 12px;
-  }
-  .finding-field .field-label {
-    font-size: 7.5pt;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 1px;
-    color: var(--text-light);
-    margin-bottom: 4px;
-  }
-  .finding-field pre {
-    background: #f8fafc;
-    border: 1px solid #e2e8f0;
-    padding: 10px 12px;
-    border-radius: 6px;
-    font-size: 8.5pt;
-    line-height: 1.5;
-    white-space: pre-wrap;
-    word-wrap: break-word;
-    overflow-x: hidden;
-    max-width: 100%;
-    color: #334155;
-    font-family: "SF Mono", "Fira Code", "Consolas", monospace;
-  }
-
-  /* CVSS badge */
-  .cvss-badge {
-    display: inline-block;
-    padding: 2px 10px;
-    border-radius: 12px;
-    font-size: 8.5pt;
-    font-weight: 700;
-    color: #fff;
-    margin-left: 4px;
-  }
-
-  /* ================================================================
-     SEVERITY BADGE
-     ================================================================ */
-  .severity {
-    display: inline-block;
-    padding: 2px 10px;
-    border-radius: 10px;
-    font-size: 7.5pt;
-    font-weight: 700;
-    color: #fff;
-    letter-spacing: 0.5px;
-  }
-
-  /* ================================================================
-     OBSERVATION CARDS
-     ================================================================ */
-  .obs-card {
-    border-left: 4px solid var(--primary);
-    background: #f8fafc;
-    border-radius: 0 8px 8px 0;
-    padding: 14px 18px;
-    margin-bottom: 14px;
-    page-break-inside: avoid;
-  }
-  .obs-card h4 {
-    margin: 0 0 6px 0;
-    font-size: 10.5pt;
-    color: var(--primary-dark);
-  }
-  .obs-card p {
-    margin: 2px 0;
-    font-size: 9pt;
-    color: var(--text-light);
-  }
-  .obs-card pre {
-    background: #fff;
-    border: 1px solid var(--border);
-    padding: 10px 12px;
-    border-radius: 6px;
-    font-size: 8.5pt;
-    white-space: pre-wrap;
-    word-wrap: break-word;
-    margin-top: 8px;
-    color: #334155;
-    font-family: "SF Mono", "Fira Code", "Consolas", monospace;
-  }
-
-  /* ================================================================
-     TABLES
-     ================================================================ */
-  table {
-    width: 100%;
-    border-collapse: collapse;
-    margin: 12px 0;
-    font-size: 8.5pt;
-  }
-  th, td {
-    padding: 8px 12px;
-    text-align: left;
-    border-bottom: 1px solid #e2e8f0;
-  }
-  th {
-    background: #f8fafc;
-    font-weight: 700;
-    font-size: 7.5pt;
-    text-transform: uppercase;
-    letter-spacing: 0.8px;
-    color: var(--text-light);
-    border-bottom: 2px solid var(--border);
-  }
-  tr:nth-child(even) td { background: #fafbfc; }
-
-  /* ================================================================
-     CREDENTIALS TABLE
-     ================================================================ */
-  .cred-type {
-    display: inline-block;
-    padding: 1px 8px;
-    border-radius: 8px;
-    font-size: 7.5pt;
-    font-weight: 600;
-    background: #ede9fe;
-    color: #5b21b6;
-  }
-
-  /* ================================================================
-     RECON SECTION
-     ================================================================ */
-  .recon-type-heading {
-    font-weight: 700;
-    font-size: 10pt;
-    color: var(--primary-dark);
-    margin-top: 16px;
-    margin-bottom: 6px;
-    padding: 6px 12px;
-    background: #f1f5f9;
-    border-radius: 6px;
-    border-left: 3px solid var(--primary);
-  }
-
-  /* ================================================================
-     PHASE / SECTION CARDS
-     ================================================================ */
-  .phase-card {
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    margin-bottom: 14px;
-    page-break-inside: avoid;
-    overflow: hidden;
-  }
-  .phase-header {
-    background: #f8fafc;
-    padding: 10px 16px;
-    font-weight: 700;
-    font-size: 10pt;
-    color: #334155;
-    border-bottom: 1px solid var(--border);
-  }
-  .phase-body {
-    padding: 14px 16px;
-  }
-  .phase-body pre {
-    background: #f8fafc;
-    border: 1px solid #e2e8f0;
-    padding: 10px 12px;
-    border-radius: 6px;
-    font-size: 8.5pt;
-    white-space: pre-wrap;
-    word-wrap: break-word;
-    color: #334155;
-    font-family: "SF Mono", "Fira Code", "Consolas", monospace;
-    margin: 0;
-  }
-
-  /* ================================================================
-     INFO CARDS
-     ================================================================ */
-  .info-card {
-    background: #fffbeb;
-    border: 1px solid #fde68a;
-    border-radius: 8px;
-    padding: 14px 18px;
-    margin-bottom: 12px;
-    page-break-inside: avoid;
-  }
-  .info-card h4 {
-    margin: 0 0 8px 0;
-    font-size: 10pt;
-    color: #92400e;
-  }
-  .info-card pre {
-    background: #fff;
-    border: 1px solid #fde68a;
-    padding: 10px 12px;
-    border-radius: 6px;
-    font-size: 8.5pt;
-    white-space: pre-wrap;
-    word-wrap: break-word;
-    color: #334155;
-    font-family: "SF Mono", "Fira Code", "Consolas", monospace;
-  }
-
-  /* ================================================================
-     MISC
-     ================================================================ */
-  .text-muted { color: var(--text-muted); font-size: 8.5pt; }
-  .page-break { page-break-before: always; }
-  a { color: var(--primary); text-decoration: none; }
-  p { margin: 4px 0; }
-</style>
-</head>
-<body>
-
-<!-- ===================== COVER PAGE ===================== -->
-<div class="cover">
-  <div class="cover-inner">
-    {% if logo_b64 %}
-    <img class="cover-logo" src="{{ logo_b64 }}" alt="AIDA">
-    {% endif %}
-    <div class="cover-brand">AIDA</div>
-
-    <hr class="cover-line">
-    <h1>Security Assessment<br>Report</h1>
-    <div class="cover-subtitle">{{ assessment.name }}</div>
-
-    <div class="cover-meta-grid">
-      {% if assessment.client_name %}
-      <div class="cover-meta-row">
-        <span class="cover-meta-label">Client</span>
-        <span class="cover-meta-value">{{ assessment.client_name }}</span>
-      </div>
-      {% endif %}
-      {% if assessment.category %}
-      <div class="cover-meta-row">
-        <span class="cover-meta-label">Category</span>
-        <span class="cover-meta-value">{{ assessment.category }}</span>
-      </div>
-      {% endif %}
-      {% if assessment.start_date %}
-      <div class="cover-meta-row">
-        <span class="cover-meta-label">Period</span>
-        <span class="cover-meta-value">{{ assessment.start_date }} — {{ assessment.end_date or "Ongoing" }}</span>
-      </div>
-      {% endif %}
-      <div class="cover-meta-row">
-        <span class="cover-meta-label">Status</span>
-        <span class="cover-meta-value">{{ assessment.status or "Active" }}</span>
-      </div>
-      <div class="cover-meta-row">
-        <span class="cover-meta-label">Generated</span>
-        <span class="cover-meta-value">{{ generated_at }}</span>
-      </div>
-    </div>
-    <div class="cover-footer">This document is confidential and intended solely for the named recipient. Generated by AIDA — AI-Driven Assessment.</div>
-  </div>
-</div>
-
-<!-- ===================== TABLE OF CONTENTS ===================== -->
-<div class="toc">
-  <h2>Table of Contents</h2>
-  <div class="toc-item"><a href="#exec-summary"><span class="toc-num">01</span> Executive Summary</a></div>
-  {% if findings %}
-  <div class="toc-item"><a href="#findings"><span class="toc-num">02</span> Findings ({{ total_findings }})</a></div>
-  {% endif %}
-  {% if observations %}
-  <div class="toc-item"><a href="#observations"><span class="toc-num">03</span> Observations ({{ total_observations }})</a></div>
-  {% endif %}
-  {% if sections %}
-  <div class="toc-item"><a href="#phases"><span class="toc-num">04</span> Assessment Phases</a></div>
-  {% endif %}
-  {% if recon %}
-  <div class="toc-item"><a href="#recon"><span class="toc-num">05</span> Reconnaissance Data ({{ total_recon }})</a></div>
-  {% endif %}
-  {% if credentials %}
-  <div class="toc-item"><a href="#credentials"><span class="toc-num">06</span> Discovered Credentials ({{ total_credentials }})</a></div>
-  {% endif %}
-  {% if info_cards %}
-  <div class="toc-item"><a href="#info"><span class="toc-num">07</span> Additional Information</a></div>
-  {% endif %}
-</div>
-
-<!-- ===================== EXECUTIVE SUMMARY ===================== -->
-<h2 id="exec-summary"><span class="section-num">01</span> Executive Summary</h2>
-
-<!-- overall risk -->
-{% set risk_bg = {"CRITICAL":"linear-gradient(135deg,#881337,#e11d48)","HIGH":"linear-gradient(135deg,#9f1239,#f43f5e)","MEDIUM":"linear-gradient(135deg,#92400e,#f59e0b)","LOW":"linear-gradient(135deg,#1e3a8a,#3b82f6)","INFORMATIONAL":"linear-gradient(135deg,#334155,#64748b)"} %}
-<div class="risk-banner" style="background:{{ risk_bg.get(risk_score, risk_bg['INFORMATIONAL']) }}">
-  <div class="risk-label">Overall Risk Level</div>
-  <div class="risk-level">{{ risk_score }}</div>
-</div>
-
-<!-- stat cards as table for WeasyPrint compatibility -->
-<table class="stats-row" style="border:none;border-spacing:8px;">
-  <tr style="border:none;">
-    <td class="stat-card" style="border:1px solid #e2e8f0;">
-      <div class="stat-num" style="color:var(--accent-critical)">{{ total_findings }}</div>
-      <div class="stat-label">Findings</div>
-    </td>
-    <td class="stat-card" style="border:1px solid #e2e8f0;">
-      <div class="stat-num" style="color:var(--primary)">{{ total_observations }}</div>
-      <div class="stat-label">Observations</div>
-    </td>
-    <td class="stat-card" style="border:1px solid #e2e8f0;">
-      <div class="stat-num" style="color:var(--accent-low)">{{ total_recon }}</div>
-      <div class="stat-label">Recon Items</div>
-    </td>
-    <td class="stat-card" style="border:1px solid #e2e8f0;">
-      <div class="stat-num" style="color:var(--accent-info)">{{ commands_count }}</div>
-      <div class="stat-label">Commands Run</div>
-    </td>
-  </tr>
-</table>
-
-<!-- severity bar chart -->
-{% if severity_counts %}
-<h3>Findings by Severity</h3>
-<div class="sev-chart">
-  {% for sev in ["CRITICAL","HIGH","MEDIUM","LOW","INFO"] %}
-  {% set cnt = severity_counts.get(sev, 0) %}
-  {% if cnt > 0 %}
-  <div class="sev-chart-row">
-    <span class="sev-chart-label" style="color:{{ severity_colors[sev] }}">{{ sev }}</span>
-    <span class="sev-chart-bar-bg">
-      <span class="sev-chart-bar" style="width:{{ (cnt / max_sev_count * 100)|int }}%;background:{{ severity_colors[sev] }}"></span>
-    </span>
-    <span class="sev-chart-count">{{ cnt }}</span>
-  </div>
-  {% endif %}
-  {% endfor %}
-</div>
-{% endif %}
-
-{% if assessment.scope %}
-<h3>Scope</h3>
-<p>{{ assessment.scope }}</p>
-{% endif %}
-
-{% if assessment.target_domains %}
-<h3>Target Domains</h3>
-<p>{{ assessment.target_domains | join(", ") }}</p>
-{% endif %}
-
-{% if assessment.ip_scopes %}
-<h3>IP Ranges</h3>
-<p>{{ assessment.ip_scopes | join(", ") }}</p>
-{% endif %}
-
-{% if assessment.objectives %}
-<h3>Objectives</h3>
-<p>{{ assessment.objectives }}</p>
-{% endif %}
-
-{% if assessment.limitations %}
-<h3>Limitations</h3>
-<p>{{ assessment.limitations }}</p>
-{% endif %}
-
-<!-- ===================== FINDINGS ===================== -->
-{% if findings %}
-<div class="page-break"></div>
-<h2 id="findings"><span class="section-num">02</span> Findings</h2>
-
-{% for f in findings %}
-<div class="finding">
-  <div class="finding-header" style="background:{{ severity_colors.get(f.severity or 'INFO', '#64748b') }}">
-    {{ f.severity or "INFO" }} — {{ f.title }}
-    <span class="finding-id">#F-{{ loop.index }}</span>
-  </div>
-  <div class="finding-body">
-    <div class="finding-meta">
-      {% if f.target_service %}<span><strong>Target:</strong> {{ f.target_service }}</span>{% endif %}
-      {% if f.status %}<span><strong>Status:</strong> {{ f.status }}</span>{% endif %}
-      {% if f.cvss_score is not none %}
-        <span><strong>CVSS 4.0:</strong>
-          {% set cvss_color = "#e11d48" if f.cvss_score >= 9.0 else "#f43f5e" if f.cvss_score >= 7.0 else "#f59e0b" if f.cvss_score >= 4.0 else "#3b82f6" %}
-          <span class="cvss-badge" style="background:{{ cvss_color }}">{{ f.cvss_score }}</span>
-        </span>
-        {% if f.cvss_vector %}<br><span class="text-muted">{{ f.cvss_vector }}</span>{% endif %}
-      {% endif %}
-    </div>
-
-    {% if f.technical_analysis %}
-    <div class="finding-field">
-      <div class="field-label">Technical Analysis</div>
-      <pre>{{ f.technical_analysis }}</pre>
-    </div>
-    {% endif %}
-
-    {% if f.proof %}
-    <div class="finding-field">
-      <div class="field-label">Proof of Concept</div>
-      <pre>{{ f.proof }}</pre>
-    </div>
-    {% endif %}
-
-    {% if f.notes %}
-    <div class="finding-field">
-      <div class="field-label">Notes / Remediation</div>
-      <pre>{{ f.notes }}</pre>
-    </div>
-    {% endif %}
-  </div>
-</div>
-{% endfor %}
-{% endif %}
-
-<!-- ===================== OBSERVATIONS ===================== -->
-{% if observations %}
-<div class="page-break"></div>
-<h2 id="observations"><span class="section-num">03</span> Observations</h2>
-
-{% for o in observations %}
-<div class="obs-card">
-  <h4>{{ o.title }}</h4>
-  {% if o.target_service %}<p><strong>Target:</strong> {{ o.target_service }}</p>{% endif %}
-  {% if o.technical_analysis %}<pre>{{ o.technical_analysis }}</pre>{% endif %}
-  {% if o.notes %}<p class="text-muted" style="margin-top:6px">{{ o.notes }}</p>{% endif %}
-</div>
-{% endfor %}
-{% endif %}
-
-<!-- ===================== PHASES ===================== -->
-{% if sections %}
-<div class="page-break"></div>
-<h2 id="phases"><span class="section-num">04</span> Assessment Phases</h2>
-
-{% for s in sections %}
-<div class="phase-card">
-  <div class="phase-header">{{ s.section_number }} — {{ s.title or s.section_type }}</div>
-  <div class="phase-body">
-    {% if s.content %}
-    <pre>{{ s.content }}</pre>
-    {% else %}
-    <p class="text-muted">No content documented for this phase.</p>
-    {% endif %}
-  </div>
-</div>
-{% endfor %}
-{% endif %}
-
-<!-- ===================== RECON ===================== -->
-{% if recon %}
-<div class="page-break"></div>
-<h2 id="recon"><span class="section-num">05</span> Reconnaissance Data</h2>
-
-{% set recon_by_type = {} %}
-{% for r in recon %}
-  {% if r.data_type not in recon_by_type %}
-    {% set _ = recon_by_type.update({r.data_type: []}) %}
-  {% endif %}
-  {% set _ = recon_by_type[r.data_type].append(r) %}
-{% endfor %}
-
-{% for dtype, items in recon_by_type.items() %}
-<div class="recon-type-heading">{{ dtype | replace("_"," ") | title }} — {{ items|length }} item{{ "s" if items|length != 1 }}</div>
-<table>
-  <thead>
-    <tr><th style="width:35%">Name</th><th>Details</th></tr>
-  </thead>
-  <tbody>
-  {% for item in items[:50] %}
-    <tr>
-      <td style="font-weight:600">{{ item.name }}</td>
-      <td class="text-muted">{{ item.details if item.details else "—" }}</td>
-    </tr>
-  {% endfor %}
-  {% if items|length > 50 %}
-    <tr><td colspan="2" class="text-muted" style="text-align:center">… and {{ items|length - 50 }} more entries</td></tr>
-  {% endif %}
-  </tbody>
-</table>
-{% endfor %}
-{% endif %}
-
-<!-- ===================== CREDENTIALS ===================== -->
-{% if credentials %}
-<div class="page-break"></div>
-<h2 id="credentials"><span class="section-num">06</span> Discovered Credentials</h2>
-<p class="text-muted" style="margin-bottom:10px">Sensitive values are masked in this report. Refer to the AIDA platform for full credential data.</p>
-
-<table>
-  <thead>
-    <tr>
-      <th>Name</th>
-      <th>Type</th>
-      <th>Service</th>
-      <th>Target</th>
-      <th>Discovered</th>
-    </tr>
-  </thead>
-  <tbody>
-  {% for c in credentials %}
-    <tr>
-      <td style="font-weight:600">{{ c.name }}</td>
-      <td><span class="cred-type">{{ c.credential_type }}</span></td>
-      <td>{{ c.service or "—" }}</td>
-      <td>{{ c.target or "—" }}</td>
-      <td>{{ c.discovered_by or "manual" }}</td>
-    </tr>
-  {% endfor %}
-  </tbody>
-</table>
-{% endif %}
-
-<!-- ===================== INFO CARDS ===================== -->
-{% if info_cards %}
-<div class="page-break"></div>
-<h2 id="info"><span class="section-num">07</span> Additional Information</h2>
-
-{% for i in info_cards %}
-<div class="info-card">
-  <h4>{{ i.title }}</h4>
-  {% if i.technical_analysis %}<pre>{{ i.technical_analysis }}</pre>{% endif %}
-  {% if i.notes %}<p class="text-muted" style="margin-top:6px">{{ i.notes }}</p>{% endif %}
-</div>
-{% endfor %}
-{% endif %}
-
-</body>
-</html>
-''')
